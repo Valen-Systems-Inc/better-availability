@@ -163,6 +163,8 @@ The app also shows input guidance while you work:
 - Time zones are searchable and shown in `Region/City` format.
 - Times accept `9am`, `1:30pm`, `13:30`, and similar inputs.
 - Dates accept `today`, `tomorrow`, or `YYYY-MM-DD`.
+- Weekly availability accepts schedule expressions such as `weekdays 8am to 9pm` or `monday 8am to 12pm and 3pm to 8pm`.
+- Block time accepts both one-time expressions such as `today 1pm to 3pm` and recurring expressions such as `weekdays 12pm to 1pm`.
 - Shared-window search uses a date picker and selectable people checklist.
 - Days accept full names such as `monday` or short names such as `mon`.
 - Roles and tags are optional labels, not a fixed permission system.
@@ -217,6 +219,9 @@ state.json
   "baseAvailability": [
     { "day": "monday", "start": "09:00", "end": "11:00" },
     { "day": "monday", "start": "13:00", "end": "16:00" }
+  ],
+  "blockedBaseAvailability": [
+    { "day": "monday", "start": "12:00", "end": "13:00" }
   ],
   "addedAvailability": [
     { "date": "2026-06-12", "start": "18:00", "end": "20:00" }

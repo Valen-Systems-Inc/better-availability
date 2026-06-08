@@ -4,12 +4,16 @@ import readlinePromises from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import {
   addAvailability,
+  addAvailabilityBatch,
   addBaseAvailability,
+  addBaseAvailabilityBatch,
   blockAvailability,
+  blockAvailabilityBatch,
   createProfile,
   deleteAvailabilityWindow,
   getAvailabilityWindow,
   listAvailabilityWindows,
+  replaceBaseAvailabilityForDays,
   updateAvailabilityWindow,
   validateProfile
 } from "./profile.js";
@@ -26,6 +30,7 @@ import {
   writeMyProfile
 } from "./storage.js";
 import { findOverlapWindows } from "./availability.js";
+import { parseOneTimeAvailabilityExpression, parseScheduleExpression } from "./schedule-expression.js";
 import { addDays, normalizeDate, todayString, validateTimeZone } from "./time.js";
 
 const mainRows = [
@@ -276,6 +281,69 @@ function formatAvailabilityByDay(profile) {
   return lines;
 }
 
+function joinWindows(windows) {
+  if (!windows || windows.length === 0) {
+    return "—";
+  }
+  return windows.map((window) => `${window.start}-${window.end}`).join(", ");
+}
+
+function weeklyAvailabilityLines(profile) {
+  return [
+    "Weekly Availability",
+    ...days.map((day) => {
+      const windows = profile.baseAvailability.filter((window) => window.day === day);
+      return `${day[0].toUpperCase()}${day.slice(1).padEnd(11)} ${joinWindows(windows)}`;
+    })
+  ];
+}
+
+function recurringBlockLines(profile) {
+  const lines = ["Recurring Blocks"];
+  if (profile.blockedBaseAvailability.length === 0) {
+    lines.push("—");
+    return lines;
+  }
+
+  for (const day of days) {
+    const windows = profile.blockedBaseAvailability.filter((window) => window.day === day);
+    if (windows.length > 0) {
+      lines.push(`${day[0].toUpperCase()}${day.slice(1).padEnd(11)} ${joinWindows(windows)}`);
+    }
+  }
+  return lines;
+}
+
+function oneTimeOverrideLines(profile) {
+  const lines = ["One-Time Overrides"];
+  const entries = [
+    ...profile.addedAvailability.map((window) => `${window.date}  added   ${window.start}-${window.end}`),
+    ...profile.blockedAvailability.map((window) => `${window.date}  blocked ${window.start}-${window.end}`)
+  ].sort();
+
+  if (entries.length === 0) {
+    lines.push("—");
+    return lines;
+  }
+
+  return [...lines, ...entries];
+}
+
+function previewExpressionLines(title, expression, kindLabel) {
+  const lines = [title];
+  if (expression.days?.length) {
+    for (const day of expression.days) {
+      lines.push(`${day[0].toUpperCase()}${day.slice(1).padEnd(11)} ${joinWindows(expression.windows)}${kindLabel ? ` ${kindLabel}` : ""}`);
+    }
+  }
+  if (expression.dates?.length) {
+    for (const date of expression.dates) {
+      lines.push(`${date}  ${joinWindows(expression.windows)}${kindLabel ? ` ${kindLabel}` : ""}`);
+    }
+  }
+  return lines;
+}
+
 async function promptLine(question, { defaultValue = "" } = {}) {
   setRawMode(false);
   stdout.write("\n");
@@ -306,6 +374,20 @@ async function waitForKey() {
     };
     stdin.on("data", onData);
   });
+}
+
+async function waitForStartOrQuit() {
+  while (true) {
+    const key = await readKey();
+    if (key.name === "q" || (key.ctrl && key.name === "c")) {
+      throw new NavigationSignal("quit");
+    }
+    if (key.name === "?") {
+      await helpScreen();
+      continue;
+    }
+    return;
+  }
 }
 
 function renderScreen({ title, subtitle, body = [], rows = [], selected = 0, message = "" }) {
@@ -619,7 +701,7 @@ async function profileForm(existing = null) {
 async function windowForm(kind, existing = {}) {
   const currentType = kind || existing.kind || "base";
   const typeAnswer = await promptLine(
-    `Window type controls how this affects availability.\nbase = normal weekly availability, added = temporary extra time, blocked = unavailable time\nType [${currentType}]: `,
+    `Window type controls how this affects availability.\nbase = normal weekly availability\nblocked-base = recurring blocked time\nadded = temporary extra time\nblocked = one-time unavailable time\nType [${currentType}]: `,
     { defaultValue: currentType }
   );
   const type = typeAnswer.toLowerCase();
@@ -632,12 +714,12 @@ async function windowForm(kind, existing = {}) {
     { defaultValue: existing.end || "" }
   );
 
-  if (type === "base") {
+  if (type === "base" || type === "blocked-base" || type === "recurring-block") {
     const day = await promptRequired(
       `Day for weekly base availability. Examples: monday, mon, friday, fri\nDay${existing.day ? ` [${existing.day}]` : ""}: `,
       { defaultValue: existing.day || "" }
     );
-    return { kind: type, day, start, end };
+    return { kind: type === "recurring-block" ? "blocked-base" : type, day, start, end };
   }
 
   const date = normalizeDate(await promptRequired(
@@ -645,6 +727,94 @@ async function windowForm(kind, existing = {}) {
     { defaultValue: existing.date || "" }
   ));
   return { kind: type, date, start, end };
+}
+
+async function previewWeeklyScheduleFlow(profile) {
+  const expressionText = await promptRequired(
+    "Describe your normal weekly availability.\nExamples:\nweekdays 8am to 9pm\nmonday through wednesday 10am to 3pm\nmonday, wednesday, friday 9am to 12pm\nmonday 8am to 12pm and 3pm to 8pm\nAvailability: "
+  );
+  const expression = parseScheduleExpression(expressionText);
+
+  let selected = 0;
+  const rows = [
+    { label: "Replace existing availability on these days", action: "replace" },
+    { label: "Add alongside existing availability", action: "add" },
+    { label: "Cancel", action: "cancel" }
+  ];
+
+  while (true) {
+    renderScreen({
+      title: "Preview weekly availability",
+      body: [
+        `You entered: ${expressionText}`,
+        "This will create:",
+        ...previewExpressionLines("", expression).filter(Boolean)
+      ],
+      rows,
+      selected
+    });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    else if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    else if (key.name === "escape") return "Weekly availability cancelled.";
+    else if (key.name === "return") {
+      const action = rows[selected].action;
+      if (action === "cancel") return "Weekly availability cancelled.";
+      const next = action === "replace"
+        ? replaceBaseAvailabilityForDays(profile, expression)
+        : addBaseAvailabilityBatch(profile, expression);
+      await writeMyProfile(next);
+      return "Weekly availability saved. Export a new JSON file when ready to share.";
+    }
+  }
+}
+
+async function oneTimeAvailabilityFlow(profile) {
+  const expressionText = await promptRequired(
+    "Describe extra availability for a specific date.\nExamples:\ntoday 6pm to 8pm\ntomorrow 9am to 11am\n2026-06-12 6pm to 8pm\nAvailability: "
+  );
+  const expression = parseOneTimeAvailabilityExpression(expressionText);
+  const confirmed = await confirmScreen("Preview one-time availability", [
+    `You entered: ${expressionText}`,
+    ...previewExpressionLines("This will add:", expression)
+  ], "Save");
+
+  if (!confirmed) {
+    return "One-time availability cancelled.";
+  }
+
+  await writeMyProfile(addAvailabilityBatch(profile, expression));
+  return "One-time availability saved. Export a new JSON file when ready to share.";
+}
+
+async function blockTimeFlow(profile) {
+  const expressionText = await promptRequired(
+    "Describe time to block.\nExamples:\ntoday 1pm to 3pm\nmonday 12pm to 3pm\nweekdays 12pm to 1pm\nmonday through friday 12pm to 1pm\nBlock: "
+  );
+
+  let expression;
+  const recurring = !/^(today|tomorrow|\d{4}-\d{2}-\d{2})\b/.test(expressionText.trim().toLowerCase());
+
+  if (recurring) {
+    expression = parseScheduleExpression(expressionText);
+  } else {
+    expression = parseOneTimeAvailabilityExpression(expressionText);
+  }
+
+  const confirmed = await confirmScreen("Preview blocked time", [
+    `You entered: ${expressionText}`,
+    ...previewExpressionLines(recurring ? "This will block every week:" : "This will block:", expression)
+  ], recurring ? "Save recurring block" : "Save");
+
+  if (!confirmed) {
+    return "Blocked time cancelled.";
+  }
+
+  await writeMyProfile(blockAvailabilityBatch(profile, expression));
+  return recurring
+    ? "Recurring blocked time saved. Export a new JSON file when ready to share."
+    : "Blocked time saved. Export a new JSON file when ready to share.";
 }
 
 async function onboardingWizard() {
@@ -663,7 +833,7 @@ First run setup:
 
 Press any key to start setup.
 `);
-  await waitForKey();
+  await waitForStartOrQuit();
   const profile = await profileForm();
   await writeMyProfile(profile);
 
@@ -673,8 +843,8 @@ Press any key to start setup.
   ], "Add window");
 
   if (addFirstWindow) {
-    const window = await windowForm("base");
-    await writeMyProfile(addBaseAvailability(profile, window));
+    await writeMyProfile(profile);
+    await previewWeeklyScheduleFlow(profile);
   }
 }
 
@@ -704,26 +874,36 @@ function myAvailabilityBody(profile, state) {
   );
 
   return [
-    "My Profile",
-    `Name: ${profile.name}`,
-    `Role: ${profile.role || "optional label not set"}`,
-    `Timezone: ${profile.timeZone}`,
-    `Current offset for selected week: ${timezoneOffsetLabel(profile.timeZone)}`,
-    changedSinceExport ? "Local profile changed since last export. Export updated JSON to share changes." : "Export status: current.",
+    "My Availability",
+    `${profile.name}`,
+    `${profile.timeZone} · ${timezoneOffsetLabel(profile.timeZone)}`,
+    `Unexported changes: ${changedSinceExport ? "yes" : "no"}`,
     "",
-    ...formatAvailabilityByDay(profile),
+    ...weeklyAvailabilityLines(profile),
     "",
-    "Select a window to edit/delete it, or choose an action below."
+    ...recurringBlockLines(profile),
+    "",
+    ...oneTimeOverrideLines(profile),
+    "",
+    "What do you want to do?"
   ];
 }
 
 function myAvailabilityRows(profile) {
   return [
-    ...availabilityRows(profile),
-    { type: "add", label: "Add availability window" },
+    { type: "set-weekly", label: "Set weekly availability" },
+    { type: "add-one-time", label: "Add one-time availability" },
     { type: "block", label: "Block time" },
+    { type: "edit-delete", label: "Edit/delete existing windows" },
     { type: "export", label: "Export JSON" },
     { type: "settings", label: "Profile settings" },
+    { type: "back", label: "Back" }
+  ];
+}
+
+function editDeleteRows(profile) {
+  return [
+    ...availabilityRows(profile),
     { type: "back", label: "Back" }
   ];
 }
@@ -950,6 +1130,7 @@ Main ideas:
   Teammates: imported teammate JSON profiles.
   Find shared windows: overlap across selected effective availability.
   Base availability: normal weekly working windows.
+  Recurring blocked time: weekly unavailable windows such as weekday lunch.
   Added availability: temporary extra time on a date.
   Blocked time: temporary unavailable time on a date.
 
@@ -963,6 +1144,9 @@ Input formats:
   Time: 9am, 1:30pm, 13:30, or 09:00.
   Date: today, tomorrow, or 2026-06-12.
   Day: monday or mon.
+  Weekly schedule: weekdays 8am to 9pm.
+  Split schedule: monday 8am to 12pm and 3pm to 8pm.
+  Recurring block: weekdays 12pm to 1pm.
 
 ${footer()}
 `);
@@ -1020,6 +1204,13 @@ async function runApp() {
       title = "My availability";
       body = myAvailabilityBody(myProfile, state);
       rows = myAvailabilityRows(myProfile);
+    } else if (screen === "edit-delete") {
+      title = "Edit/delete existing windows";
+      body = [
+        "Select an existing window to edit or delete it.",
+        "Recurring blocked time appears here as its own kind."
+      ];
+      rows = editDeleteRows(myProfile);
     } else if (screen === "teammates") {
       title = "Teammates";
       body = [
@@ -1084,27 +1275,30 @@ async function runApp() {
         else if (row.id === "quit") break;
         selected = 0;
       } else if (screen === "my") {
-        if (row.type === "window") {
-          const freshProfile = await readMyProfile();
-          const freshWindow = getAvailabilityWindow(freshProfile, row.window.kind, row.window.index);
-          message = await windowActionFlow(freshProfile, freshWindow);
-        } else if (row.type === "add") {
-          const window = await windowForm("base");
-          const freshProfile = await readMyProfile();
-          if (window.kind === "base") await writeMyProfile(addBaseAvailability(freshProfile, window));
-          else if (window.kind === "added") await writeMyProfile(addAvailability(freshProfile, window));
-          else await writeMyProfile(blockAvailability(freshProfile, window));
-          message = "Window added. Export a new JSON file when ready to share.";
+        if (row.type === "set-weekly") {
+          message = await previewWeeklyScheduleFlow(await readMyProfile());
+        } else if (row.type === "add-one-time") {
+          message = await oneTimeAvailabilityFlow(await readMyProfile());
         } else if (row.type === "block") {
-          const window = await windowForm("blocked");
-          await writeMyProfile(blockAvailability(await readMyProfile(), window));
-          message = "Blocked time added. Export a new JSON file when ready to share.";
+          message = await blockTimeFlow(await readMyProfile());
+        } else if (row.type === "edit-delete") {
+          screen = "edit-delete";
+          selected = 0;
         } else if (row.type === "export") {
           message = await exportFlow();
         } else if (row.type === "settings") {
           message = await settingsFlow();
         } else if (row.type === "back") {
           screen = "main";
+          selected = 0;
+        }
+      } else if (screen === "edit-delete") {
+        if (row.type === "window") {
+          const freshProfile = await readMyProfile();
+          const freshWindow = getAvailabilityWindow(freshProfile, row.window.kind, row.window.index);
+          message = await windowActionFlow(freshProfile, freshWindow);
+        } else {
+          screen = "my";
           selected = 0;
         }
       } else if (screen === "teammates") {

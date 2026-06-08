@@ -1,4 +1,10 @@
-import { dayNames, normalizeTime, parseMinutes, validateTimeZone } from "./time.js";
+import {
+  dayNames,
+  normalizeDay,
+  normalizeTime,
+  parseMinutes,
+  validateTimeZone
+} from "./time.js";
 
 const daySet = new Set(dayNames);
 const availabilityKinds = {
@@ -16,27 +22,12 @@ const availabilityKinds = {
     property: "blockedAvailability",
     mode: "override",
     label: "Blocked time"
+  },
+  "blocked-base": {
+    property: "blockedBaseAvailability",
+    mode: "base",
+    label: "Recurring blocked time"
   }
-};
-const dayAliases = {
-  sun: "sunday",
-  sunday: "sunday",
-  mon: "monday",
-  monday: "monday",
-  tue: "tuesday",
-  tues: "tuesday",
-  tuesday: "tuesday",
-  wed: "wednesday",
-  weds: "wednesday",
-  wednesday: "wednesday",
-  thu: "thursday",
-  thur: "thursday",
-  thurs: "thursday",
-  thursday: "thursday",
-  fri: "friday",
-  friday: "friday",
-  sat: "saturday",
-  saturday: "saturday"
 };
 
 export function slugify(value) {
@@ -66,6 +57,7 @@ export function createProfile({ name, timeZone, role = "", tags = [] }) {
     createdAt: now,
     updatedAt: now,
     baseAvailability: [],
+    blockedBaseAvailability: [],
     addedAvailability: [],
     blockedAvailability: []
   };
@@ -73,8 +65,11 @@ export function createProfile({ name, timeZone, role = "", tags = [] }) {
 
 export function normalizeAvailabilityKind(kind) {
   const normalized = String(kind || "").trim().toLowerCase();
+  if (normalized === "recurring-block") {
+    return "blocked-base";
+  }
   if (!availabilityKinds[normalized]) {
-    throw new Error("availability kind must be base, added, or blocked");
+    throw new Error("availability kind must be base, blocked-base, added, or blocked");
   }
   return normalized;
 }
@@ -99,7 +94,7 @@ export function normalizeWindow(window, mode = "base") {
   }
 
   if (mode === "base") {
-    const day = dayAliases[String(window.day || "").trim().toLowerCase()];
+    const day = normalizeDay(window.day);
     if (!daySet.has(day)) {
       throw new Error(`base availability requires a valid day like monday or mon. Received ${window.day}`);
     }
@@ -141,6 +136,7 @@ export function validateProfile(profile) {
     createdAt: profile.createdAt ? String(profile.createdAt) : undefined,
     updatedAt: profile.updatedAt ? String(profile.updatedAt) : undefined,
     baseAvailability: (profile.baseAvailability || []).map((window) => normalizeWindow(window, "base")),
+    blockedBaseAvailability: (profile.blockedBaseAvailability || []).map((window) => normalizeWindow(window, "base")),
     addedAvailability: (profile.addedAvailability || []).map((window) => normalizeWindow(window, "override")),
     blockedAvailability: (profile.blockedAvailability || []).map((window) => normalizeWindow(window, "override"))
   };
@@ -264,6 +260,16 @@ export function blockAvailability(profile, window, options = {}) {
   return markUpdated(next);
 }
 
+export function blockBaseAvailability(profile, window, options = {}) {
+  const next = validateProfile(profile);
+  const normalized = normalizeWindow(window, "base");
+  if (!options.allowOverlap) {
+    assertNoWindowConflict(next, "blocked-base", normalized);
+  }
+  next.blockedBaseAvailability.push(normalized);
+  return markUpdated(next);
+}
+
 export function updateAvailabilityWindow(profileInput, ref, patch, options = {}) {
   const profile = validateProfile(profileInput);
   const fromKind = normalizeAvailabilityKind(ref.kind);
@@ -300,4 +306,53 @@ export function deleteAvailabilityWindow(profileInput, ref) {
 
   profile[config.property] = profile[config.property].filter((_, itemIndex) => itemIndex !== index);
   return markUpdated(profile);
+}
+
+export function addBaseAvailabilityBatch(profileInput, expression, options = {}) {
+  let next = validateProfile(profileInput);
+  for (const day of expression.days) {
+    for (const window of expression.windows) {
+      next = addBaseAvailability(next, { day, ...window }, options);
+    }
+  }
+  return next;
+}
+
+export function addAvailabilityBatch(profileInput, expression, options = {}) {
+  let next = validateProfile(profileInput);
+  for (const date of expression.dates || []) {
+    for (const window of expression.windows) {
+      next = addAvailability(next, { date, ...window }, options);
+    }
+  }
+  return next;
+}
+
+export function blockAvailabilityBatch(profileInput, expression, options = {}) {
+  let next = validateProfile(profileInput);
+
+  if (expression.days?.length) {
+    for (const day of expression.days) {
+      for (const window of expression.windows) {
+        next = blockBaseAvailability(next, { day, ...window }, options);
+      }
+    }
+  }
+
+  if (expression.dates?.length) {
+    for (const date of expression.dates) {
+      for (const window of expression.windows) {
+        next = blockAvailability(next, { date, ...window }, options);
+      }
+    }
+  }
+
+  return next;
+}
+
+export function replaceBaseAvailabilityForDays(profileInput, expression) {
+  const next = validateProfile(profileInput);
+  const daySet = new Set(expression.days || []);
+  next.baseAvailability = next.baseAvailability.filter((window) => !daySet.has(window.day));
+  return addBaseAvailabilityBatch(next, expression);
 }

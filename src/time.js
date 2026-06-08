@@ -1,5 +1,6 @@
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const HUMAN_TIME_RE = /^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)$/i;
+const BARE_HOUR_RE = /^(\d{1,2})$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const dayNames = [
@@ -11,6 +12,52 @@ export const dayNames = [
   "friday",
   "saturday"
 ];
+
+export const dayAliases = {
+  sun: "sunday",
+  sunday: "sunday",
+  mon: "monday",
+  monday: "monday",
+  tue: "tuesday",
+  tues: "tuesday",
+  tuesday: "tuesday",
+  wed: "wednesday",
+  weds: "wednesday",
+  wednesday: "wednesday",
+  thu: "thursday",
+  thur: "thursday",
+  thurs: "thursday",
+  thursday: "thursday",
+  fri: "friday",
+  friday: "friday",
+  sat: "saturday",
+  saturday: "saturday"
+};
+
+export function normalizeDay(value) {
+  const normalized = dayAliases[String(value || "").trim().toLowerCase()];
+  if (!normalized) {
+    throw new Error(`Expected a day like monday, mon, friday, or fri. Received ${value}`);
+  }
+  return normalized;
+}
+
+export function expandDayRange(start, end) {
+  const startDay = normalizeDay(start);
+  const endDay = normalizeDay(end);
+  const startIndex = dayNames.indexOf(startDay);
+  const endIndex = dayNames.indexOf(endDay);
+
+  if (startIndex < 0 || endIndex < 0) {
+    throw new Error(`Could not expand day range ${start} through ${end}`);
+  }
+
+  if (startIndex <= endIndex) {
+    return dayNames.slice(startIndex, endIndex + 1);
+  }
+
+  return [...dayNames.slice(startIndex), ...dayNames.slice(0, endIndex + 1)];
+}
 
 export function assertDate(value) {
   if (!DATE_RE.test(value)) {
@@ -42,6 +89,15 @@ export function parseMinutes(value) {
   const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
   const match = TIME_RE.exec(normalized);
   if (!match) {
+    const bareHour = BARE_HOUR_RE.exec(normalized);
+    if (bareHour) {
+      const hours = Number(bareHour[1]);
+      if (hours < 0 || hours > 23) {
+        throw new Error(`Expected hour between 0 and 23. Received ${value}`);
+      }
+      return hours * 60;
+    }
+
     const humanMatch = HUMAN_TIME_RE.exec(normalized);
 
     if (!humanMatch) {

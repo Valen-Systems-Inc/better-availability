@@ -59,11 +59,17 @@ export function effectiveLocalWindows(profileInput, date) {
   const additions = profile.addedAvailability
     .filter((window) => window.date === date)
     .map(toMinuteWindow);
+  const recurringBlocks = profile.blockedBaseAvailability
+    .filter((window) => window.day === day)
+    .map(toMinuteWindow);
   const blocks = profile.blockedAvailability
     .filter((window) => window.date === date)
     .map(toMinuteWindow);
 
-  return subtractWindows(mergeWindows([...base, ...additions]), mergeWindows(blocks))
+  return subtractWindows(
+    subtractWindows(mergeWindows([...base, ...additions]), mergeWindows(recurringBlocks)),
+    mergeWindows(blocks)
+  )
     .map((window) => ({
       date,
       start: window.start,

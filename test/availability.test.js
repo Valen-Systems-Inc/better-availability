@@ -4,6 +4,7 @@ import { findOverlapWindows, effectiveLocalWindows } from "../src/availability.j
 import {
   addAvailability,
   addBaseAvailability,
+  blockBaseAvailability,
   blockAvailability,
   createProfile,
   deleteAvailabilityWindow,
@@ -21,6 +22,7 @@ function profile(overrides) {
     tags: overrides.tags || [],
     timeZone: overrides.timeZone,
     baseAvailability: overrides.baseAvailability || [],
+    blockedBaseAvailability: overrides.blockedBaseAvailability || [],
     addedAvailability: overrides.addedAvailability || [],
     blockedAvailability: overrides.blockedAvailability || []
   };
@@ -70,6 +72,27 @@ test("applies added availability and blocked availability before overlap", () =>
     [
       [660, 780],
       [1080, 1200]
+    ]
+  );
+});
+
+test("applies recurring blocked availability to effective windows", () => {
+  let william = profile({
+    id: "william",
+    name: "William",
+    timeZone: "America/Los_Angeles",
+    baseAvailability: [{ day: "monday", start: "08:00", end: "20:00" }],
+    blockedBaseAvailability: []
+  });
+  william = blockBaseAvailability(william, { day: "monday", start: "12:00", end: "15:00" });
+
+  const effective = effectiveLocalWindows(william, "2026-06-08");
+
+  assert.deepEqual(
+    effective.map((window) => [window.start, window.end]),
+    [
+      [480, 720],
+      [900, 1200]
     ]
   );
 });
