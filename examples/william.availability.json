@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "william",
+  "name": "William",
+  "role": "Founder",
+  "tags": ["leadership", "product"],
+  "timeZone": "America/Los_Angeles",
+  "baseAvailability": [
+    { "day": "monday", "start": "10:00", "end": "14:00" },
+    { "day": "tuesday", "start": "10:00", "end": "14:00" }
+  ],
+  "addedAvailability": [],
+  "blockedAvailability": []
+}

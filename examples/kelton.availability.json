@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "kelton",
+  "name": "Kelton",
+  "role": "Developer",
+  "tags": ["frontend"],
+  "timeZone": "America/New_York",
+  "baseAvailability": [
+    { "day": "monday", "start": "13:00", "end": "17:00" },
+    { "day": "tuesday", "start": "13:00", "end": "17:00" }
+  ],
+  "addedAvailability": [],
+  "blockedAvailability": []
+}

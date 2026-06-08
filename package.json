@@ -1,0 +1,33 @@
+{
+  "name": "better-availability",
+  "version": "0.1.0",
+  "description": "Local-first team availability mapper for distributed teams.",
+  "type": "module",
+  "bin": {
+    "better-availability": "./bin/better-availability.js"
+  },
+  "scripts": {
+    "check": "npm test",
+    "test": "node --test"
+  },
+  "keywords": [
+    "availability",
+    "timezone",
+    "local-first",
+    "tui",
+    "distributed-teams"
+  ],
+  "author": "Valen Systems Inc",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Valen-Systems-Inc/better-availability.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Valen-Systems-Inc/better-availability/issues"
+  },
+  "homepage": "https://github.com/Valen-Systems-Inc/better-availability#readme"
+}
