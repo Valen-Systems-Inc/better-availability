@@ -135,11 +135,15 @@ Find overlap windows:
 better-availability overlap --date 2026-06-09 --people william,kelton --duration 30
 ```
 
-Open the interactive terminal menu:
+Open the terminal user interface:
 
 ```sh
 better-availability
 ```
+
+The TUI supports arrow keys, `j`/`k`, Enter, Escape, and `q`. From the TUI you
+can view teammates, create your profile, import teammate JSON, export your JSON,
+add or block availability, and query overlap windows.
 
 ## Local Directory
 
