@@ -390,6 +390,17 @@ async function waitForStartOrQuit() {
   }
 }
 
+async function showTransientMessage(title, lines) {
+  clear();
+  stdout.write(`${bright(title)}
+
+${lines.join("\n")}
+
+${footer()}
+`);
+  await waitForKey();
+}
+
 function renderScreen({ title, subtitle, body = [], rows = [], selected = 0, message = "" }) {
   const width = stdout.columns || 100;
   const lines = [bright(title)];
@@ -818,8 +829,10 @@ async function blockTimeFlow(profile) {
 }
 
 async function onboardingWizard() {
-  clear();
-  stdout.write(`${bright("Welcome to Better Availability")}
+  while (true) {
+    try {
+      clear();
+      stdout.write(`${bright("Welcome to Better Availability")}
 
 This tool helps distributed teams share availability using local JSON files.
 No accounts. No server. No calendar access.
@@ -833,18 +846,30 @@ First run setup:
 
 Press any key to start setup.
 `);
-  await waitForStartOrQuit();
-  const profile = await profileForm();
-  await writeMyProfile(profile);
+      await waitForStartOrQuit();
+      const profile = await profileForm();
+      await writeMyProfile(profile);
 
-  const addFirstWindow = await confirmScreen("Add normal availability?", [
-    "Your profile exists. Add your first normal weekly availability window now?",
-    "You can add, edit, or delete windows later from My availability."
-  ], "Add window");
+      const addFirstWindow = await confirmScreen("Add normal availability?", [
+        "Your profile exists. Add your first normal weekly availability window now?",
+        "You can add, edit, or delete windows later from My availability."
+      ], "Add window");
 
-  if (addFirstWindow) {
-    await writeMyProfile(profile);
-    await previewWeeklyScheduleFlow(profile);
+      if (addFirstWindow) {
+        await writeMyProfile(profile);
+        await previewWeeklyScheduleFlow(profile);
+      }
+      return;
+    } catch (error) {
+      if (error instanceof NavigationSignal) {
+        throw error;
+      }
+      await showTransientMessage("Setup issue", [
+        error.message,
+        "",
+        "The setup flow stayed inside the terminal app. Press any key to try again."
+      ]);
+    }
   }
 }
 
