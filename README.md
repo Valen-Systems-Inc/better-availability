@@ -87,6 +87,10 @@ The project intentionally avoids vague abbreviations such as `PST`, `EST`, and
 `CST`. Offset calculations are made for the actual date being evaluated, so
 daylight saving changes are handled by the runtime's time zone database.
 
+In the TUI, timezone setup includes a searchable list of supported IANA
+timezones. You can search by city or region, choose from the numbered results,
+or paste the exact value if you already know it.
+
 ## Install Locally
 
 ```sh
@@ -110,11 +114,12 @@ Create a local profile:
 better-availability init --name "William" --timezone America/Los_Angeles
 ```
 
-Add base availability:
+Add base availability. Time inputs can use either normal human time or 24-hour
+time:
 
 ```sh
-better-availability add-base --day monday --start 09:00 --end 11:00
-better-availability add-base --day monday --start 13:00 --end 16:00
+better-availability add-base --day monday --start 9am --end 11am
+better-availability add-base --day mon --start 1pm --end 4pm
 ```
 
 Export your profile:
@@ -144,6 +149,14 @@ better-availability start
 The TUI supports arrow keys, `j`/`k`, Enter, Escape, and `q`. From the TUI you
 can view teammates, create your profile, import teammate JSON, export your JSON,
 add or block availability, and query overlap windows.
+
+The TUI also shows input guidance while you work:
+
+- Time zones are searchable and shown in `Region/City` format.
+- Times accept `9am`, `1:30pm`, `13:30`, and similar inputs.
+- Dates accept `today`, `tomorrow`, or `YYYY-MM-DD`.
+- Days accept full names such as `monday` or short names such as `mon`.
+- Roles and tags are optional labels, not a fixed permission system.
 
 ## Local Directory
 

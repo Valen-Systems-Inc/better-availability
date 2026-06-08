@@ -64,7 +64,13 @@ Usage:
   better-availability overlap --date 2026-06-09 [--people william,kelton] [--duration 30]
 
 Environment:
-  BETTER_AVAILABILITY_HOME=/path/to/local/team-directory`;
+  BETTER_AVAILABILITY_HOME=/path/to/local/team-directory
+
+Input formats:
+  Time zones use Region/City, for example America/Los_Angeles.
+  Times accept 9am, 1:30pm, 13:30, or 09:00.
+  Days accept monday or mon.
+  TUI dates accept today, tomorrow, or YYYY-MM-DD.`;
 }
 
 async function init(args) {

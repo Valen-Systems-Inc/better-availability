@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { findOverlapWindows, effectiveLocalWindows } from "../src/availability.js";
 import { addAvailability, blockAvailability, createProfile } from "../src/profile.js";
+import { normalizeTime, parseMinutes } from "../src/time.js";
 
 function profile(overrides) {
   return {
@@ -94,4 +95,13 @@ test("creates valid local-first profiles with real IANA time zones", () => {
   assert.equal(created.id, "frontend-dev");
   assert.equal(created.timeZone, "Europe/London");
   assert.throws(() => createProfile({ name: "Bad TZ", timeZone: "PST" }), /Invalid IANA time zone/);
+});
+
+test("accepts human time input and normalizes it to 24-hour time", () => {
+  assert.equal(parseMinutes("9am"), 540);
+  assert.equal(parseMinutes("1:30pm"), 810);
+  assert.equal(parseMinutes("12am"), 0);
+  assert.equal(parseMinutes("12pm"), 720);
+  assert.equal(normalizeTime("6 pm"), "18:00");
+  assert.equal(normalizeTime("09:15"), "09:15");
 });

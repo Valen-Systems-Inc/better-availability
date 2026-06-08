@@ -1,6 +1,26 @@
-import { dayNames, parseMinutes, validateTimeZone } from "./time.js";
+import { dayNames, normalizeTime, parseMinutes, validateTimeZone } from "./time.js";
 
 const daySet = new Set(dayNames);
+const dayAliases = {
+  sun: "sunday",
+  sunday: "sunday",
+  mon: "monday",
+  monday: "monday",
+  tue: "tuesday",
+  tues: "tuesday",
+  tuesday: "tuesday",
+  wed: "wednesday",
+  weds: "wednesday",
+  wednesday: "wednesday",
+  thu: "thursday",
+  thur: "thursday",
+  thurs: "thursday",
+  thursday: "thursday",
+  fri: "friday",
+  friday: "friday",
+  sat: "saturday",
+  saturday: "saturday"
+};
 
 export function slugify(value) {
   return value
@@ -36,8 +56,8 @@ export function normalizeWindow(window, mode = "base") {
   }
 
   const normalized = {
-    start: window.start,
-    end: window.end
+    start: normalizeTime(window.start),
+    end: normalizeTime(window.end)
   };
 
   const startMinutes = parseMinutes(normalized.start);
@@ -48,9 +68,9 @@ export function normalizeWindow(window, mode = "base") {
   }
 
   if (mode === "base") {
-    const day = String(window.day || "").toLowerCase();
+    const day = dayAliases[String(window.day || "").trim().toLowerCase()];
     if (!daySet.has(day)) {
-      throw new Error(`base availability requires a valid day, received ${window.day}`);
+      throw new Error(`base availability requires a valid day like monday or mon. Received ${window.day}`);
     }
     normalized.day = day;
   } else {

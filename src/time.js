@@ -1,4 +1,5 @@
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const HUMAN_TIME_RE = /^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const dayNames = [
@@ -18,12 +19,37 @@ export function assertDate(value) {
 }
 
 export function parseMinutes(value) {
-  const match = TIME_RE.exec(value);
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+  const match = TIME_RE.exec(normalized);
   if (!match) {
-    throw new Error(`Expected time in HH:mm 24-hour format, received ${value}`);
+    const humanMatch = HUMAN_TIME_RE.exec(normalized);
+
+    if (!humanMatch) {
+      throw new Error(`Expected time like 09:00, 13:30, 9am, or 1:30pm. Received ${value}`);
+    }
+
+    let hours = Number(humanMatch[1]);
+    const mins = Number(humanMatch[2] || "0");
+    const period = humanMatch[3].toLowerCase();
+
+    if (hours < 1 || hours > 12) {
+      throw new Error(`Expected 12-hour time between 1 and 12. Received ${value}`);
+    }
+
+    if (period === "am" && hours === 12) {
+      hours = 0;
+    } else if (period === "pm" && hours !== 12) {
+      hours += 12;
+    }
+
+    return hours * 60 + mins;
   }
 
   return Number(match[1]) * 60 + Number(match[2]);
+}
+
+export function normalizeTime(value) {
+  return formatMinutes(parseMinutes(value));
 }
 
 export function formatMinutes(minutes) {

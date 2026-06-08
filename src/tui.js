@@ -17,6 +17,7 @@ import {
   writeMyProfile
 } from "./storage.js";
 import { findOverlapWindows } from "./availability.js";
+import { validateTimeZone } from "./time.js";
 
 const actions = [
   { id: "dashboard", label: "Team availability dashboard" },
@@ -30,6 +31,31 @@ const actions = [
   { id: "help", label: "Help" },
   { id: "quit", label: "Quit" }
 ];
+
+function supportedTimeZones() {
+  if (typeof Intl.supportedValuesOf === "function") {
+    return [...new Set([...Intl.supportedValuesOf("timeZone"), "UTC"])].sort();
+  }
+
+  return [
+    "America/Los_Angeles",
+    "America/Denver",
+    "America/Chicago",
+    "America/New_York",
+    "Europe/London",
+    "Europe/Paris",
+    "Asia/Kolkata",
+    "UTC"
+  ];
+}
+
+function regionSummary(zones) {
+  return [...new Set(zones.map((zone) => zone.split("/")[0]))].sort().join(", ");
+}
+
+function localTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
 
 function clear() {
   stdout.write("\x1b[2J\x1b[H");
@@ -57,13 +83,32 @@ function trimLine(value, width) {
 
 function formatProfiles(profiles, width) {
   if (profiles.length === 0) {
-    return ["No local profiles yet. Create your profile or import teammate JSON."];
+    return ["No local profiles yet. Choose \"Create or replace my profile\" to start."];
   }
 
   return profiles.map((profile) => {
     const tags = profile.tags.length ? `  [${profile.tags.join(", ")}]` : "";
-    return trimLine(`${profile.id.padEnd(18)} ${profile.name.padEnd(22)} ${profile.timeZone}${tags}`, width);
+    const windowCount = profile.baseAvailability.length + profile.addedAvailability.length;
+    const status = windowCount === 0 ? "no availability yet" : `${windowCount} window${windowCount === 1 ? "" : "s"}`;
+    return trimLine(`${profile.id.padEnd(18)} ${profile.name.padEnd(22)} ${profile.timeZone}  ${status}${tags}`, width);
   });
+}
+
+function todayString(offsetDays = 0) {
+  const now = new Date();
+  now.setDate(now.getDate() + offsetDays);
+  return now.toISOString().slice(0, 10);
+}
+
+function normalizeDateAnswer(answer) {
+  const value = answer.trim().toLowerCase();
+  if (value === "today") {
+    return todayString(0);
+  }
+  if (value === "tomorrow") {
+    return todayString(1);
+  }
+  return answer;
 }
 
 function renderHome({ selected, message, profiles }) {
@@ -86,6 +131,7 @@ function renderHome({ selected, message, profiles }) {
 
   lines.push("");
   lines.push(faint("Use ↑/↓, j/k, Enter. Press q or Esc to exit."));
+  lines.push(faint("Tip: time inputs accept 9am, 1:30pm, or 13:30."));
   if (message) {
     lines.push("");
     lines.push(message);
@@ -122,20 +168,81 @@ async function promptRequired(question) {
   return answer;
 }
 
+async function promptTimeZone() {
+  const zones = supportedTimeZones();
+  const defaultZone = localTimeZone();
+  let query = "";
+
+  while (true) {
+    const matches = zones.filter((zone) => zone.toLowerCase().includes(query.toLowerCase()));
+    const visible = matches.slice(0, 18);
+
+    clear();
+    stdout.write(`${bright("Choose Your Time Zone")}
+
+Time zones use this format:
+  Region/City
+
+Top-level regions in this runtime:
+  ${regionSummary(zones)}
+
+Examples:
+  America/Los_Angeles
+  America/New_York
+  Europe/London
+  Asia/Kolkata
+
+You can type:
+  - Enter to use your computer's timezone: ${defaultZone}
+  - a number from the list below
+  - a search term like los, london, tokyo, america, europe
+  - the exact timezone if you already know it
+
+${query ? `Search: ${query}\n` : "Showing the first supported zones. Type a search term to narrow the list.\n"}
+${visible.map((zone, index) => `  ${String(index + 1).padStart(2)}. ${zone}`).join("\n")}
+${matches.length > visible.length ? `\n  ...${matches.length - visible.length} more. Type a more specific search term.\n` : ""}
+
+`);
+
+    const answer = await promptLine(`Time zone [${defaultZone}]: `);
+    if (!answer) {
+      validateTimeZone(defaultZone);
+      return defaultZone;
+    }
+
+    const selectedNumber = Number(answer);
+    if (Number.isInteger(selectedNumber) && selectedNumber >= 1 && selectedNumber <= visible.length) {
+      return visible[selectedNumber - 1];
+    }
+
+    const exact = zones.find((zone) => zone.toLowerCase() === answer.toLowerCase());
+    if (exact) {
+      return exact;
+    }
+
+    if (answer.includes("/")) {
+      validateTimeZone(answer);
+      return answer;
+    }
+
+    query = answer;
+  }
+}
+
 async function promptWindow(mode) {
-  const start = await promptRequired("Start time (HH:mm): ");
-  const end = await promptRequired("End time (HH:mm): ");
+  const start = await promptRequired("Start time (examples: 9am, 1:30pm, 13:30): ");
+  const end = await promptRequired("End time (examples: 11am, 5pm, 17:00): ");
 
   if (mode === "base") {
     return {
-      day: (await promptRequired("Day (monday-sunday): ")).toLowerCase(),
+      day: (await promptRequired("Day (examples: monday, mon, friday): ")).toLowerCase(),
       start,
       end
     };
   }
 
   return {
-    date: await promptRequired("Date (YYYY-MM-DD): "),
+    date: normalizeDateAnswer(await promptRequired("Date (today, tomorrow, or YYYY-MM-DD): ")),
     start,
     end
   };
@@ -158,6 +265,30 @@ Profile time zones must be real IANA identifiers such as:
   Europe/London
   Asia/Kolkata
 
+Time zones are organized as Region/City. The setup flow includes a searchable
+list of supported time zones.
+
+Time inputs accept both normal and 24-hour formats:
+  9am
+  1:30pm
+  13:30
+
+Date inputs accept:
+  today
+  tomorrow
+  2026-06-12
+
+Days accept full names or short names:
+  monday
+  mon
+  friday
+  fri
+
+Roles and tags are labels for filtering later. They are optional:
+  Founder
+  Frontend Developer
+  designer, frontend, leadership
+
 CLI examples:
   better-availability init --name "William" --timezone America/Los_Angeles
   better-availability import ./kelton.availability.json
@@ -169,9 +300,13 @@ Press any key to return.
 }
 
 async function showOverlap() {
-  const date = await promptRequired("Date (YYYY-MM-DD): ");
+  const date = normalizeDateAnswer(await promptRequired("Date (today, tomorrow, or YYYY-MM-DD): "));
   const durationText = await promptLine("Minimum duration in minutes [30]: ");
-  const peopleText = await promptLine("Profile ids, comma-separated [all]: ");
+  const availableProfiles = await listProfiles();
+  if (availableProfiles.length > 0) {
+    stdout.write(`Available profile ids: ${availableProfiles.map((profile) => profile.id).join(", ")}\n`);
+  }
+  const peopleText = await promptLine("Profile ids, comma-separated [all profiles]: ");
   const durationMinutes = durationText ? Number(durationText) : 30;
   const people = peopleText ? peopleText.split(",").map((id) => id.trim()).filter(Boolean) : [];
   const profiles = await selectProfiles(people);
@@ -217,10 +352,10 @@ async function runAction(action) {
   }
 
   if (action.id === "init") {
-    const name = await promptRequired("Name: ");
-    const timeZone = await promptRequired("Time zone: ");
-    const role = await promptLine("Role [blank]: ");
-    const tagsText = await promptLine("Tags, comma-separated [blank]: ");
+    const name = await promptRequired("Name (example: William): ");
+    const timeZone = await promptTimeZone();
+    const role = await promptLine("Role [optional, examples: Founder, Frontend Developer, Designer]: ");
+    const tagsText = await promptLine("Tags [optional, comma-separated, examples: frontend, leadership]: ");
     const profile = createProfile({
       name,
       timeZone,
