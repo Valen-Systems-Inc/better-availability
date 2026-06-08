@@ -1,21 +1,26 @@
-import fs from "node:fs/promises";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
   addAvailability,
   addBaseAvailability,
   blockAvailability,
-  createProfile
+  createProfile,
+  deleteAvailabilityWindow,
+  listAvailabilityWindows,
+  updateAvailabilityWindow
 } from "./profile.js";
 import {
+  exportMyProfile,
   importTeammate,
   listProfiles,
   readMyProfile,
+  removeTeammate,
   selectProfiles,
   writeMyProfile
 } from "./storage.js";
 import { findOverlapWindows } from "./availability.js";
 import { launchTui } from "./tui.js";
+import { normalizeDate } from "./time.js";
 
 function parseArgs(args) {
   const values = { _: [] };
@@ -58,6 +63,10 @@ Usage:
   better-availability add-base --day monday --start 09:00 --end 11:00
   better-availability add --date 2026-06-12 --start 18:00 --end 20:00
   better-availability block --date 2026-06-10 --start 13:00 --end 15:00
+  better-availability windows
+  better-availability edit-window --kind base --index 0 --day monday --start 9am --end 11am
+  better-availability delete-window --kind base --index 0
+  better-availability remove-teammate kelton
   better-availability export ./me.availability.json
   better-availability import ./teammate.availability.json
   better-availability teammates
@@ -70,7 +79,7 @@ Input formats:
   Time zones use Region/City, for example America/Los_Angeles.
   Times accept 9am, 1:30pm, 13:30, or 09:00.
   Days accept monday or mon.
-  TUI dates accept today, tomorrow, or YYYY-MM-DD.`;
+  Terminal app dates accept today, tomorrow, or YYYY-MM-DD.`;
 }
 
 async function init(args) {
@@ -98,7 +107,7 @@ async function addBase(args) {
 async function add(args) {
   const profile = await readMyProfile();
   const next = addAvailability(profile, {
-    date: requireArg(args, "date"),
+    date: normalizeDate(requireArg(args, "date")),
     start: requireArg(args, "start"),
     end: requireArg(args, "end")
   });
@@ -109,7 +118,7 @@ async function add(args) {
 async function block(args) {
   const profile = await readMyProfile();
   const next = blockAvailability(profile, {
-    date: requireArg(args, "date"),
+    date: normalizeDate(requireArg(args, "date")),
     start: requireArg(args, "start"),
     end: requireArg(args, "end")
   });
@@ -123,8 +132,7 @@ async function exportProfile(args) {
     throw new Error("Missing export file path");
   }
 
-  const profile = await readMyProfile();
-  await fs.writeFile(target, `${JSON.stringify(profile, null, 2)}\n`);
+  const { profile } = await exportMyProfile(target);
   console.log(`Exported ${profile.name} to ${target}`);
 }
 
@@ -151,15 +159,65 @@ async function teammates() {
   }
 }
 
+async function windows() {
+  const profile = await readMyProfile();
+  const rows = listAvailabilityWindows(profile);
+  if (rows.length === 0) {
+    console.log("No availability windows found.");
+    return;
+  }
+
+  for (const row of rows) {
+    const where = row.kind === "base" ? row.day : row.date;
+    console.log(`${row.number}. ${row.kind} index=${row.index} ${where} ${row.start}-${row.end}`);
+  }
+}
+
+async function editWindow(args) {
+  const kind = requireArg(args, "kind");
+  const index = Number(requireArg(args, "index"));
+  const profile = await readMyProfile();
+  const patch = {};
+
+  if (args.type) patch.kind = args.type;
+  if (args.day) patch.day = args.day;
+  if (args.date) patch.date = args.date;
+  if (args.start) patch.start = args.start;
+  if (args.end) patch.end = args.end;
+
+  const next = updateAvailabilityWindow(profile, { kind, index }, patch);
+  await writeMyProfile(next);
+  console.log("Availability window updated. Export your JSON to share this change.");
+}
+
+async function deleteWindow(args) {
+  const kind = requireArg(args, "kind");
+  const index = Number(requireArg(args, "index"));
+  const next = deleteAvailabilityWindow(await readMyProfile(), { kind, index });
+  await writeMyProfile(next);
+  console.log("Availability window deleted. Export your JSON to share this change.");
+}
+
+async function removeTeammateCommand(args) {
+  const id = args._[1];
+  if (!id) {
+    throw new Error("Missing teammate id");
+  }
+  await removeTeammate(id);
+  console.log(`Removed teammate ${id} from the local team directory.`);
+}
+
 async function overlap(args) {
-  const date = requireArg(args, "date");
+  const date = normalizeDate(requireArg(args, "date"));
   const durationMinutes = args.duration ? Number(args.duration) : 30;
   const people = args.people ? args.people.split(",").map((id) => id.trim()).filter(Boolean) : [];
   const profiles = await selectProfiles(people);
   const windows = findOverlapWindows(profiles, { date, durationMinutes });
 
   if (windows.length === 0) {
-    console.log(`No overlap windows found on ${date} for ${durationMinutes} minutes.`);
+    console.log(`No shared windows found on ${date} for ${durationMinutes} minutes.`);
+    console.log(`People: ${profiles.map((profile) => profile.name).join(", ")}`);
+    console.log("Try reducing duration, removing one teammate, checking stale profiles, or viewing each person's availability.");
     return;
   }
 
@@ -255,6 +313,14 @@ export async function runCli(rawArgs) {
     await add(args);
   } else if (command === "block") {
     await block(args);
+  } else if (command === "windows") {
+    await windows();
+  } else if (command === "edit-window") {
+    await editWindow(args);
+  } else if (command === "delete-window") {
+    await deleteWindow(args);
+  } else if (command === "remove-teammate") {
+    await removeTeammateCommand(args);
   } else if (command === "export") {
     await exportProfile(args);
   } else if (command === "import") {

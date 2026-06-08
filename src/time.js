@@ -18,6 +18,23 @@ export function assertDate(value) {
   }
 }
 
+export function todayString(offsetDays = 0) {
+  const now = new Date();
+  now.setDate(now.getDate() + offsetDays);
+  return now.toISOString().slice(0, 10);
+}
+
+export function normalizeDate(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "today") {
+    return todayString(0);
+  }
+  if (normalized === "tomorrow") {
+    return todayString(1);
+  }
+  return value;
+}
+
 export function parseMinutes(value) {
   const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
   const match = TIME_RE.exec(normalized);

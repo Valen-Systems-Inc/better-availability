@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { findOverlapWindows, effectiveLocalWindows } from "../src/availability.js";
-import { addAvailability, blockAvailability, createProfile } from "../src/profile.js";
+import {
+  addAvailability,
+  addBaseAvailability,
+  blockAvailability,
+  createProfile,
+  deleteAvailabilityWindow,
+  listAvailabilityWindows,
+  updateAvailabilityWindow
+} from "../src/profile.js";
 import { normalizeTime, parseMinutes } from "../src/time.js";
 
 function profile(overrides) {
@@ -104,4 +112,42 @@ test("accepts human time input and normalizes it to 24-hour time", () => {
   assert.equal(parseMinutes("12pm"), 720);
   assert.equal(normalizeTime("6 pm"), "18:00");
   assert.equal(normalizeTime("09:15"), "09:15");
+});
+
+test("lists, edits, and deletes availability windows", () => {
+  let william = profile({
+    id: "william",
+    name: "William",
+    timeZone: "America/Los_Angeles"
+  });
+  william = addBaseAvailability(william, { day: "mon", start: "9am", end: "11am" });
+  william = addAvailability(william, { date: "2026-06-12", start: "6pm", end: "8pm" });
+
+  assert.deepEqual(
+    listAvailabilityWindows(william).map((window) => [window.kind, window.start, window.end]),
+    [
+      ["base", "09:00", "11:00"],
+      ["added", "18:00", "20:00"]
+    ]
+  );
+
+  william = updateAvailabilityWindow(william, { kind: "base", index: 0 }, { end: "12pm" });
+  assert.equal(william.baseAvailability[0].end, "12:00");
+
+  william = deleteAvailabilityWindow(william, { kind: "added", index: 0 });
+  assert.equal(william.addedAvailability.length, 0);
+});
+
+test("rejects overlapping windows before saving", () => {
+  let william = profile({
+    id: "william",
+    name: "William",
+    timeZone: "America/Los_Angeles"
+  });
+  william = addBaseAvailability(william, { day: "monday", start: "09:00", end: "12:00" });
+
+  assert.throws(
+    () => addBaseAvailability(william, { day: "mon", start: "11am", end: "2pm" }),
+    /overlaps an existing base window/
+  );
 });

@@ -6,31 +6,100 @@ import {
   addAvailability,
   addBaseAvailability,
   blockAvailability,
-  createProfile
+  createProfile,
+  deleteAvailabilityWindow,
+  getAvailabilityWindow,
+  listAvailabilityWindows,
+  updateAvailabilityWindow,
+  validateProfile
 } from "./profile.js";
 import {
   availabilityHome,
+  exportMyProfile,
   importTeammate,
   listProfiles,
+  listTeammates,
+  readJson,
   readMyProfile,
+  readState,
+  removeTeammate,
   selectProfiles,
   writeMyProfile
 } from "./storage.js";
 import { findOverlapWindows } from "./availability.js";
-import { validateTimeZone } from "./time.js";
+import { normalizeDate, validateTimeZone } from "./time.js";
 
-const actions = [
-  { id: "dashboard", label: "Team availability dashboard" },
-  { id: "overlap", label: "Query overlap windows" },
-  { id: "init", label: "Create or replace my profile" },
-  { id: "base", label: "Add base availability" },
-  { id: "add", label: "Add temporary availability" },
-  { id: "block", label: "Block availability" },
+const mainRows = [
+  { id: "my", label: "My availability" },
+  { id: "teammates", label: "Teammates" },
+  { id: "overlap", label: "Find shared windows" },
   { id: "import", label: "Import teammate JSON" },
   { id: "export", label: "Export my JSON" },
+  { id: "settings", label: "Settings" },
   { id: "help", label: "Help" },
   { id: "quit", label: "Quit" }
 ];
+
+const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+const timezoneSearchHints = {
+  florida: ["America/New_York", "America/Chicago"],
+  eastern: ["America/New_York"],
+  "new york": ["America/New_York"],
+  california: ["America/Los_Angeles"],
+  pacific: ["America/Los_Angeles"],
+  "los angeles": ["America/Los_Angeles"],
+  london: ["Europe/London"],
+  india: ["Asia/Kolkata"],
+  kolkata: ["Asia/Kolkata"],
+  chicago: ["America/Chicago"],
+  central: ["America/Chicago"],
+  denver: ["America/Denver"],
+  mountain: ["America/Denver"]
+};
+
+class NavigationSignal extends Error {
+  constructor(action) {
+    super(action);
+    this.action = action;
+  }
+}
+
+async function handleNestedNavigation(key) {
+  if (key.name === "q" || (key.ctrl && key.name === "c")) {
+    throw new NavigationSignal("quit");
+  }
+  if (key.name === "m") {
+    throw new NavigationSignal("main");
+  }
+  if (key.name === "?") {
+    await helpScreen();
+    return true;
+  }
+  return false;
+}
+
+function clear() {
+  stdout.write("\x1b[2J\x1b[H");
+}
+
+function bright(value) {
+  return `\x1b[1m${value}\x1b[22m`;
+}
+
+function faint(value) {
+  return `\x1b[2m${value}\x1b[22m`;
+}
+
+function inverse(value) {
+  return `\x1b[7m${value}\x1b[27m`;
+}
+
+function setRawMode(enabled) {
+  if (stdin.isTTY) {
+    stdin.setRawMode(enabled);
+  }
+}
 
 function supportedTimeZones() {
   if (typeof Intl.supportedValuesOf === "function") {
@@ -49,286 +118,164 @@ function supportedTimeZones() {
   ];
 }
 
-function regionSummary(zones) {
-  return [...new Set(zones.map((zone) => zone.split("/")[0]))].sort().join(", ");
-}
-
 function localTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
 
-function clear() {
-  stdout.write("\x1b[2J\x1b[H");
+function timezoneOffsetLabel(timeZone, date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset"
+  });
+  const part = formatter.formatToParts(date).find((item) => item.type === "timeZoneName");
+  return part?.value || "GMT";
 }
 
-function faint(value) {
-  return `\x1b[2m${value}\x1b[22m`;
+function localTimeLabel(timeZone, date = new Date()) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
 }
 
-function bright(value) {
-  return `\x1b[1m${value}\x1b[22m`;
+function ageDays(dateValue) {
+  if (!dateValue) {
+    return null;
+  }
+  const ageMs = Date.now() - new Date(dateValue).getTime();
+  return Math.max(0, Math.floor(ageMs / 86400000));
 }
 
-function inverse(value) {
-  return `\x1b[7m${value}\x1b[27m`;
+function staleLabel(importedAt) {
+  const daysOld = ageDays(importedAt);
+  if (daysOld === null) {
+    return "unknown freshness";
+  }
+  if (daysOld >= 14) {
+    return `possibly stale (${daysOld} days old)`;
+  }
+  if (daysOld === 0) {
+    return "current (imported today)";
+  }
+  return `current (${daysOld} days old)`;
 }
 
 function trimLine(value, width) {
   if (value.length <= width) {
     return value;
   }
-
   return `${value.slice(0, Math.max(0, width - 1))}…`;
 }
 
-function formatProfiles(profiles, width) {
-  if (profiles.length === 0) {
-    return ["No local profiles yet. Choose \"Create or replace my profile\" to start."];
-  }
-
-  return profiles.map((profile) => {
-    const tags = profile.tags.length ? `  [${profile.tags.join(", ")}]` : "";
-    const windowCount = profile.baseAvailability.length + profile.addedAvailability.length;
-    const status = windowCount === 0 ? "no availability yet" : `${windowCount} window${windowCount === 1 ? "" : "s"}`;
-    return trimLine(`${profile.id.padEnd(18)} ${profile.name.padEnd(22)} ${profile.timeZone}  ${status}${tags}`, width);
-  });
+function footer() {
+  return faint("Controls: ↑/↓ move • Enter select • Esc back • m main menu • q quit • ? help");
 }
 
-function todayString(offsetDays = 0) {
-  const now = new Date();
-  now.setDate(now.getDate() + offsetDays);
-  return now.toISOString().slice(0, 10);
+function selectedLine(isSelected, label) {
+  return `${isSelected ? ">" : " "} ${isSelected ? inverse(` ${label} `) : label}`;
 }
 
-function normalizeDateAnswer(answer) {
-  const value = answer.trim().toLowerCase();
-  if (value === "today") {
-    return todayString(0);
+function statusLines(profile, state) {
+  if (!profile) {
+    return [
+      "Profile Status",
+      "  Missing local profile.",
+      "  Create your profile before adding availability, exporting, or finding shared windows."
+    ];
   }
-  if (value === "tomorrow") {
-    return todayString(1);
-  }
-  return answer;
+
+  const hasWindows = profile.baseAvailability.length + profile.addedAvailability.length > 0;
+  const changedSinceExport = !state.lastExportedAt || (
+    profile.updatedAt && new Date(profile.updatedAt) > new Date(state.lastExportedAt)
+  );
+
+  return [
+    "Profile Status",
+    `  OK Name set: ${profile.name}`,
+    `  OK Timezone set: ${profile.timeZone}`,
+    `${hasWindows ? "  OK" : "  Missing"} Base or added availability ${hasWindows ? "exists" : "is missing"}`,
+    `${profile.role ? "  OK" : "  Optional"} Role ${profile.role ? `set: ${profile.role}` : "not set"}`,
+    `${changedSinceExport ? "  Warning" : "  OK"} ${changedSinceExport ? "Local profile changed since last export" : "Export is current"}`,
+    `  Profile is ${hasWindows ? "usable" : "not ready: add at least one availability window"}.`
+  ];
 }
 
-function renderHome({ selected, message, profiles }) {
-  const width = stdout.columns || 88;
+function formatWindowRow(window) {
+  const where = window.kind === "base" ? window.day : window.date;
+  return `${window.number}. ${window.kindLabel.padEnd(18)} ${where.padEnd(10)} ${window.start} - ${window.end}`;
+}
+
+function availabilityRows(profile) {
+  if (!profile) {
+    return [];
+  }
+
+  return listAvailabilityWindows(profile).map((window) => ({
+    type: "window",
+    label: formatWindowRow(window),
+    window
+  }));
+}
+
+function formatAvailabilityByDay(profile) {
+  if (!profile) {
+    return ["No profile yet."];
+  }
+
   const lines = [];
-
-  lines.push(bright("Better Availability"));
-  lines.push(faint(`Local team directory: ${availabilityHome()}`));
-  lines.push("");
-  lines.push(bright("Profiles"));
-  lines.push(...formatProfiles(profiles, width).map((line) => `  ${line}`));
-  lines.push("");
-  lines.push(bright("Actions"));
-
-  actions.forEach((action, index) => {
-    const marker = index === selected ? ">" : " ";
-    const label = index === selected ? inverse(` ${action.label} `) : ` ${action.label}`;
-    lines.push(`${marker}${label}`);
-  });
-
-  lines.push("");
-  lines.push(faint("Use ↑/↓, j/k, Enter. Press q or Esc to exit."));
-  lines.push(faint("Tip: time inputs accept 9am, 1:30pm, or 13:30."));
-  if (message) {
-    lines.push("");
-    lines.push(message);
+  const baseByDay = new Map(days.map((day) => [day, []]));
+  for (const window of profile.baseAvailability) {
+    baseByDay.get(window.day)?.push(window);
   }
 
-  clear();
-  stdout.write(`${lines.join("\n")}\n`);
-}
-
-function setRawMode(enabled) {
-  if (stdin.isTTY) {
-    stdin.setRawMode(enabled);
+  lines.push("Base Availability");
+  for (const day of days) {
+    const windows = baseByDay.get(day) || [];
+    lines.push(`${day[0].toUpperCase()}${day.slice(1)}`);
+    if (windows.length === 0) {
+      lines.push("  No availability");
+    } else {
+      for (const window of windows) {
+        lines.push(`  ${window.start} - ${window.end}`);
+      }
+    }
   }
+
+  lines.push("");
+  lines.push("Overrides");
+  const added = profile.addedAvailability.map((window) => `  ${window.date}  ${window.start} - ${window.end} added availability`);
+  const blocked = profile.blockedAvailability.map((window) => `  ${window.date}  ${window.start} - ${window.end} blocked`);
+  if (added.length === 0 && blocked.length === 0) {
+    lines.push("  No added availability or blocked time");
+  } else {
+    lines.push(...blocked, ...added);
+  }
+
+  return lines;
 }
 
-async function promptLine(question) {
+async function promptLine(question, { defaultValue = "" } = {}) {
   setRawMode(false);
   stdout.write("\n");
   const rl = readlinePromises.createInterface({ input: stdin, output: stdout });
 
   try {
-    return (await rl.question(question)).trim();
+    const answer = (await rl.question(question)).trim();
+    return answer || defaultValue;
   } finally {
     rl.close();
     setRawMode(true);
   }
 }
 
-async function promptRequired(question) {
-  const answer = await promptLine(question);
+async function promptRequired(question, options = {}) {
+  const answer = await promptLine(question, options);
   if (!answer) {
     throw new Error(`${question.replace(/[: ]+$/, "")} is required`);
   }
   return answer;
-}
-
-async function promptTimeZone() {
-  const zones = supportedTimeZones();
-  const defaultZone = localTimeZone();
-  let query = "";
-
-  while (true) {
-    const matches = zones.filter((zone) => zone.toLowerCase().includes(query.toLowerCase()));
-    const visible = matches.slice(0, 18);
-
-    clear();
-    stdout.write(`${bright("Choose Your Time Zone")}
-
-Time zones use this format:
-  Region/City
-
-Top-level regions in this runtime:
-  ${regionSummary(zones)}
-
-Examples:
-  America/Los_Angeles
-  America/New_York
-  Europe/London
-  Asia/Kolkata
-
-You can type:
-  - Enter to use your computer's timezone: ${defaultZone}
-  - a number from the list below
-  - a search term like los, london, tokyo, america, europe
-  - the exact timezone if you already know it
-
-${query ? `Search: ${query}\n` : "Showing the first supported zones. Type a search term to narrow the list.\n"}
-${visible.map((zone, index) => `  ${String(index + 1).padStart(2)}. ${zone}`).join("\n")}
-${matches.length > visible.length ? `\n  ...${matches.length - visible.length} more. Type a more specific search term.\n` : ""}
-
-`);
-
-    const answer = await promptLine(`Time zone [${defaultZone}]: `);
-    if (!answer) {
-      validateTimeZone(defaultZone);
-      return defaultZone;
-    }
-
-    const selectedNumber = Number(answer);
-    if (Number.isInteger(selectedNumber) && selectedNumber >= 1 && selectedNumber <= visible.length) {
-      return visible[selectedNumber - 1];
-    }
-
-    const exact = zones.find((zone) => zone.toLowerCase() === answer.toLowerCase());
-    if (exact) {
-      return exact;
-    }
-
-    if (answer.includes("/")) {
-      validateTimeZone(answer);
-      return answer;
-    }
-
-    query = answer;
-  }
-}
-
-async function promptWindow(mode) {
-  const start = await promptRequired("Start time (examples: 9am, 1:30pm, 13:30): ");
-  const end = await promptRequired("End time (examples: 11am, 5pm, 17:00): ");
-
-  if (mode === "base") {
-    return {
-      day: (await promptRequired("Day (examples: monday, mon, friday): ")).toLowerCase(),
-      start,
-      end
-    };
-  }
-
-  return {
-    date: normalizeDateAnswer(await promptRequired("Date (today, tomorrow, or YYYY-MM-DD): ")),
-    start,
-    end
-  };
-}
-
-async function showHelp() {
-  clear();
-  stdout.write(`${bright("Better Availability Help")}
-
-Profiles are portable JSON files. Your local team directory stores your profile
-plus imported teammate profiles, then overlap queries run against effective
-availability.
-
-Availability math:
-  Base Availability + Added Availability - Blocked Availability = Effective Availability
-
-Profile time zones must be real IANA identifiers such as:
-  America/Los_Angeles
-  America/New_York
-  Europe/London
-  Asia/Kolkata
-
-Time zones are organized as Region/City. The setup flow includes a searchable
-list of supported time zones.
-
-Time inputs accept both normal and 24-hour formats:
-  9am
-  1:30pm
-  13:30
-
-Date inputs accept:
-  today
-  tomorrow
-  2026-06-12
-
-Days accept full names or short names:
-  monday
-  mon
-  friday
-  fri
-
-Roles and tags are labels for filtering later. They are optional:
-  Founder
-  Frontend Developer
-  designer, frontend, leadership
-
-CLI examples:
-  better-availability init --name "William" --timezone America/Los_Angeles
-  better-availability import ./kelton.availability.json
-  better-availability overlap --date 2026-06-09 --people william,kelton --duration 30
-
-Press any key to return.
-`);
-  await waitForKey();
-}
-
-async function showOverlap() {
-  const date = normalizeDateAnswer(await promptRequired("Date (today, tomorrow, or YYYY-MM-DD): "));
-  const durationText = await promptLine("Minimum duration in minutes [30]: ");
-  const availableProfiles = await listProfiles();
-  if (availableProfiles.length > 0) {
-    stdout.write(`Available profile ids: ${availableProfiles.map((profile) => profile.id).join(", ")}\n`);
-  }
-  const peopleText = await promptLine("Profile ids, comma-separated [all profiles]: ");
-  const durationMinutes = durationText ? Number(durationText) : 30;
-  const people = peopleText ? peopleText.split(",").map((id) => id.trim()).filter(Boolean) : [];
-  const profiles = await selectProfiles(people);
-  const windows = findOverlapWindows(profiles, { date, durationMinutes });
-
-  clear();
-  stdout.write(`${bright(`Overlap windows for ${date}`)}\n\n`);
-
-  if (windows.length === 0) {
-    stdout.write(`No overlap windows found for ${durationMinutes} minutes.\n`);
-  } else {
-    for (const window of windows) {
-      stdout.write(`${window.start.toISOString()} - ${window.end.toISOString()} (${window.durationMinutes} minutes)\n`);
-      for (const local of window.localTimes) {
-        stdout.write(`  ${local.name.padEnd(24)} ${local.start} - ${local.end} ${local.timeZone}\n`);
-      }
-      stdout.write("\n");
-    }
-  }
-
-  stdout.write(faint("Press any key to return.\n"));
-  await waitForKey();
 }
 
 async function waitForKey() {
@@ -341,111 +288,703 @@ async function waitForKey() {
   });
 }
 
-async function runAction(action) {
-  if (action.id === "dashboard") {
-    return "Dashboard refreshed.";
+function renderScreen({ title, subtitle, body = [], rows = [], selected = 0, message = "" }) {
+  const width = stdout.columns || 100;
+  const lines = [bright(title)];
+  if (subtitle) {
+    lines.push(faint(subtitle));
+  }
+  lines.push("");
+  lines.push(...body.map((line) => trimLine(line, width)));
+
+  if (rows.length > 0) {
+    if (body.length > 0) {
+      lines.push("");
+    }
+    rows.forEach((row, index) => lines.push(selectedLine(index === selected, trimLine(row.label, width - 4))));
   }
 
-  if (action.id === "overlap") {
-    await showOverlap();
-    return "Overlap query complete.";
+  lines.push("");
+  lines.push(footer());
+  if (message) {
+    lines.push("");
+    lines.push(message);
   }
 
-  if (action.id === "init") {
-    const name = await promptRequired("Name (example: William): ");
-    const timeZone = await promptTimeZone();
-    const role = await promptLine("Role [optional, examples: Founder, Frontend Developer, Designer]: ");
-    const tagsText = await promptLine("Tags [optional, comma-separated, examples: frontend, leadership]: ");
-    const profile = createProfile({
-      name,
-      timeZone,
-      role,
-      tags: tagsText ? tagsText.split(",").map((tag) => tag.trim()).filter(Boolean) : []
+  clear();
+  stdout.write(`${lines.join("\n")}\n`);
+}
+
+async function confirmScreen(title, body, confirmLabel = "Confirm") {
+  let selected = 1;
+  const rows = [
+    { label: confirmLabel, value: true },
+    { label: "Cancel", value: false }
+  ];
+
+  while (true) {
+    renderScreen({ title, body, rows, selected });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "left" || key.name === "up" || key.name === "k") {
+      selected = (selected - 1 + rows.length) % rows.length;
+    } else if (key.name === "right" || key.name === "down" || key.name === "j") {
+      selected = (selected + 1) % rows.length;
+    } else if (key.name === "return") {
+      return rows[selected].value;
+    } else if (key.name === "escape" || key.name === "q") {
+      return false;
+    }
+  }
+}
+
+function readKey() {
+  return new Promise((resolve) => {
+    stdin.once("keypress", (_chunk, keypress) => resolve(keypress));
+  });
+}
+
+async function chooseTimezone() {
+  const zones = supportedTimeZones();
+  const detected = localTimeZone();
+  let query = "";
+  let selected = 0;
+
+  while (true) {
+    const lower = query.toLowerCase();
+    const hintZones = timezoneSearchHints[lower] || [];
+    const matches = zones.filter((zone) => zone.toLowerCase().includes(lower));
+    const resultSet = [...new Set([...hintZones, ...matches])].filter((zone) => zones.includes(zone));
+    const visible = (query ? resultSet : zones).slice(0, 20);
+    const rows = [
+      { label: `Use detected local timezone: ${detected}`, zone: detected },
+      ...visible.map((zone) => ({ label: zone, zone })),
+      { label: "Enter timezone manually", manual: true },
+      { label: "Search again", search: true }
+    ];
+    selected = Math.min(selected, rows.length - 1);
+
+    const body = [
+      "Use IANA timezone names, not abbreviations.",
+      "Good: America/Los_Angeles, America/New_York, Europe/London, Asia/Kolkata",
+      "Avoid: PST, EST, CST",
+      "",
+      "Timezone names are organized as Region/City.",
+      "Search examples: los angeles, california, pacific, florida, eastern, london, india",
+      query ? `Search results for "${query}"` : "Browse supported timezones or search."
+    ];
+
+    if (lower === "florida") {
+      body.push("Florida note: most of Florida uses America/New_York. Parts of the Panhandle use America/Chicago.");
+    }
+
+    renderScreen({ title: "Choose timezone", body, rows, selected });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+
+    if (key.name === "up" || key.name === "k") {
+      selected = (selected - 1 + rows.length) % rows.length;
+    } else if (key.name === "down" || key.name === "j") {
+      selected = (selected + 1) % rows.length;
+    } else if (key.name === "escape") {
+      return null;
+    } else if (key.name === "return") {
+      const row = rows[selected];
+      if (row.search) {
+        query = await promptLine("Search timezones by city, region, or phrase: ");
+        selected = 0;
+      } else if (row.manual) {
+        const manual = await promptRequired("Enter timezone manually, example America/Los_Angeles: ");
+        validateTimeZone(manual);
+        if (await confirmTimezone(manual)) {
+          return manual;
+        }
+      } else if (await confirmTimezone(row.zone)) {
+        return row.zone;
+      }
+    } else if (key.name === "s" || key.name === "/") {
+      query = await promptLine("Search timezones by city, region, or phrase: ");
+      selected = 0;
+    }
+  }
+}
+
+async function confirmTimezone(timeZone) {
+  return confirmScreen("Confirm timezone", [
+    `Selected timezone: ${timeZone}`,
+    `For the current week, this resolves to: ${timezoneOffsetLabel(timeZone)}`,
+    `Current local time there: ${localTimeLabel(timeZone)}`,
+    "",
+    "Use this timezone?"
+  ], "Use timezone");
+}
+
+async function profileForm(existing = null) {
+  const name = await promptRequired(
+    `Name identifies your local profile. Example: William\nName${existing ? ` [${existing.name}]` : ""}: `,
+    { defaultValue: existing?.name || "" }
+  );
+  const role = await promptLine(
+    `Role is optional. It is a label for grouping teammates later.\nExamples: Founder, Frontend Developer, Backend, Design, Contractor\nRole${existing?.role ? ` [${existing.role}]` : " [optional]"}: `,
+    { defaultValue: existing?.role || "" }
+  );
+  const timezone = await chooseTimezone();
+  if (!timezone) {
+    throw new Error("Timezone selection cancelled");
+  }
+  const tagsText = await promptLine(
+    `Tags are optional comma-separated labels. Examples: frontend, leadership, contractor\nTags${existing?.tags?.length ? ` [${existing.tags.join(", ")}]` : " [optional]"}: `,
+    { defaultValue: existing?.tags?.join(", ") || "" }
+  );
+
+  const next = createProfile({
+    name,
+    role,
+    timeZone: timezone,
+    tags: tagsText ? tagsText.split(",").map((tag) => tag.trim()).filter(Boolean) : []
+  });
+
+  if (existing) {
+    return {
+      ...next,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      baseAvailability: existing.baseAvailability,
+      addedAvailability: existing.addedAvailability,
+      blockedAvailability: existing.blockedAvailability
+    };
+  }
+
+  return next;
+}
+
+async function windowForm(kind, existing = {}) {
+  const currentType = kind || existing.kind || "base";
+  const typeAnswer = await promptLine(
+    `Window type controls how this affects availability.\nbase = normal weekly availability, added = temporary extra time, blocked = unavailable time\nType [${currentType}]: `,
+    { defaultValue: currentType }
+  );
+  const type = typeAnswer.toLowerCase();
+  const start = await promptRequired(
+    `Start time for this window. Examples: 9am, 13:30, 6 pm\nStart time${existing.start ? ` [${existing.start}]` : ""}: `,
+    { defaultValue: existing.start || "" }
+  );
+  const end = await promptRequired(
+    `End time for this window. It must be after the start time.\nEnd time${existing.end ? ` [${existing.end}]` : ""}: `,
+    { defaultValue: existing.end || "" }
+  );
+
+  if (type === "base") {
+    const day = await promptRequired(
+      `Day for weekly base availability. Examples: monday, mon, friday, fri\nDay${existing.day ? ` [${existing.day}]` : ""}: `,
+      { defaultValue: existing.day || "" }
+    );
+    return { kind: type, day, start, end };
+  }
+
+  const date = normalizeDate(await promptRequired(
+    `Date for temporary availability or blocked time. Examples: today, tomorrow, 2026-06-12\nDate${existing.date ? ` [${existing.date}]` : ""}: `,
+    { defaultValue: existing.date || "" }
+  ));
+  return { kind: type, date, start, end };
+}
+
+async function onboardingWizard() {
+  clear();
+  stdout.write(`${bright("Welcome to Better Availability")}
+
+This tool helps distributed teams share availability using local JSON files.
+No accounts. No server. No calendar access.
+
+First run setup:
+  Step 1: Your name
+  Step 2: Your optional role
+  Step 3: Your timezone
+  Step 4: Your normal availability
+  Step 5: Export your JSON when ready
+
+Press any key to start setup.
+`);
+  await waitForKey();
+  const profile = await profileForm();
+  await writeMyProfile(profile);
+
+  const addFirstWindow = await confirmScreen("Add normal availability?", [
+    "Your profile exists. Add your first normal weekly availability window now?",
+    "You can add, edit, or delete windows later from My availability."
+  ], "Add window");
+
+  if (addFirstWindow) {
+    const window = await windowForm("base");
+    await writeMyProfile(addBaseAvailability(profile, window));
+  }
+}
+
+function mainBody(myProfile, state, teammates) {
+  const lines = [
+    `Local team directory: ${availabilityHome()}`,
+    "",
+    ...statusLines(myProfile, state),
+    "",
+    `Imported teammates: ${teammates.length}`
+  ];
+
+  if (myProfile) {
+    lines.push(`Timezone now: ${myProfile.timeZone} (${timezoneOffsetLabel(myProfile.timeZone)})`);
+  }
+
+  return lines;
+}
+
+function myAvailabilityBody(profile, state) {
+  if (!profile) {
+    return ["No local profile yet. Create your profile first."];
+  }
+
+  const changedSinceExport = !state.lastExportedAt || (
+    profile.updatedAt && new Date(profile.updatedAt) > new Date(state.lastExportedAt)
+  );
+
+  return [
+    "My Profile",
+    `Name: ${profile.name}`,
+    `Role: ${profile.role || "optional label not set"}`,
+    `Timezone: ${profile.timeZone}`,
+    `Current offset for selected week: ${timezoneOffsetLabel(profile.timeZone)}`,
+    changedSinceExport ? "Local profile changed since last export. Export updated JSON to share changes." : "Export status: current.",
+    "",
+    ...formatAvailabilityByDay(profile),
+    "",
+    "Select a window to edit/delete it, or choose an action below."
+  ];
+}
+
+function myAvailabilityRows(profile) {
+  return [
+    ...availabilityRows(profile),
+    { type: "add", label: "Add availability window" },
+    { type: "block", label: "Block time" },
+    { type: "export", label: "Export JSON" },
+    { type: "settings", label: "Profile settings" },
+    { type: "back", label: "Back" }
+  ];
+}
+
+function teammateRows(teammates) {
+  return [
+    ...teammates.map((item) => ({
+      type: "teammate",
+      label: `${item.profile.id.padEnd(18)} ${item.profile.name.padEnd(22)} ${item.profile.timeZone}  ${staleLabel(item.importedAt)}`,
+      teammate: item
+    })),
+    { type: "import", label: "Import teammate JSON" },
+    { type: "back", label: "Back" }
+  ];
+}
+
+function teammateDetailBody(item) {
+  return [
+    "Teammate profile",
+    `Name: ${item.profile.name}`,
+    `Role: ${item.profile.role || "not set"}`,
+    `Timezone: ${item.profile.timeZone}`,
+    `Last imported: ${item.importedAt || "unknown"}`,
+    `Profile updated by teammate: ${item.profile.updatedAt || "unknown"}`,
+    `Status: ${staleLabel(item.importedAt)}`,
+    "",
+    ...formatAvailabilityByDay(item.profile)
+  ];
+}
+
+function noResultsGuidance(names, date, durationMinutes) {
+  return [
+    `No shared windows found for: ${names.join(", ") || "selected people"}`,
+    `Date: ${date}`,
+    `Duration: ${durationMinutes} minutes`,
+    "",
+    "Try:",
+    "- reducing duration",
+    "- removing one teammate",
+    "- checking stale profiles",
+    "- viewing each person's availability",
+    "- adding or unblocking availability"
+  ];
+}
+
+async function findSharedWindowsFlow() {
+  const date = normalizeDate(await promptRequired("Date range start. Use today, tomorrow, or YYYY-MM-DD: "));
+  const durationText = await promptLine("Minimum duration in minutes [30]: ", { defaultValue: "30" });
+  const profiles = await listProfiles();
+  if (profiles.length > 0) {
+    stdout.write(`Available profile ids: ${profiles.map((profile) => profile.id).join(", ")}\n`);
+  }
+  const peopleText = await promptLine("Profile ids, comma-separated [all profiles]: ");
+  const durationMinutes = Number(durationText || 30);
+  const people = peopleText ? peopleText.split(",").map((id) => id.trim()).filter(Boolean) : [];
+  const selectedProfiles = await selectProfiles(people);
+  const windows = findOverlapWindows(selectedProfiles, { date, durationMinutes });
+
+  clear();
+  if (windows.length === 0) {
+    stdout.write(`${bright("No shared windows found")}\n\n${noResultsGuidance(
+      selectedProfiles.map((profile) => profile.name),
+      date,
+      durationMinutes
+    ).join("\n")}\n\n${footer()}\n`);
+    await waitForKey();
+    return;
+  }
+
+  stdout.write(`${bright(`Shared windows for ${date}`)}\n\n`);
+  windows.forEach((window, index) => {
+    stdout.write(`Best Window #${index + 1}\n`);
+    for (const local of window.localTimes) {
+      stdout.write(`${local.name}: ${local.start} - ${local.end} ${local.timeZone}\n`);
+    }
+    stdout.write("Why this works: all selected teammates have overlapping effective availability for this duration.\n");
+    stdout.write("No blocked override conflicts with this computed window.\n\n");
+  });
+  stdout.write(`${footer()}\n`);
+  await waitForKey();
+}
+
+async function importFlow() {
+  const source = await promptRequired("Path to teammate JSON file. This imports a local copy only: ");
+  const incoming = validateProfile(await readJson(source));
+  const teammates = await listTeammates();
+  const existing = teammates.find((item) => item.profile.id === incoming.id);
+  let mode = "replace";
+
+  if (existing) {
+    let selected = 0;
+    const rows = [
+      { label: "Replace existing", mode: "replace" },
+      { label: "Keep both", mode: "keep-both" },
+      { label: "Cancel", mode: "cancel" }
+    ];
+    while (true) {
+      renderScreen({
+        title: "Import conflict",
+        body: [
+          `${incoming.name} already exists.`,
+          `Existing profile updated: ${existing.profile.updatedAt || "unknown"}`,
+          `Imported profile updated: ${incoming.updatedAt || "unknown"}`,
+          "",
+          "Choose what to do."
+        ],
+        rows,
+        selected
+      });
+      const key = await readKey();
+      if (await handleNestedNavigation(key)) continue;
+      if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+      if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+      if (key.name === "escape") return "Import cancelled.";
+      if (key.name === "return") {
+        mode = rows[selected].mode;
+        break;
+      }
+    }
+  }
+
+  if (mode === "cancel") {
+    return "Import cancelled.";
+  }
+
+  const result = await importTeammate(source, { onConflict: mode });
+  return result.imported ? `Imported ${result.profile.name}.` : "Import cancelled.";
+}
+
+async function exportFlow() {
+  const target = await promptRequired("Export path for your JSON file. Example: ./william.availability.json: ");
+  const { profile } = await exportMyProfile(target);
+  return `Exported ${profile.name}. Share that JSON with your team.`;
+}
+
+async function editWindowFlow(profile, window) {
+  const edited = await windowForm(window.kind, window);
+  await writeMyProfile(updateAvailabilityWindow(profile, { kind: window.kind, index: window.index }, edited));
+  return "Window edited. Your local profile has changed. Export a new JSON file when ready to share.";
+}
+
+async function deleteWindowFlow(profile, window) {
+  const where = window.kind === "base" ? window.day : window.date;
+  const confirmed = await confirmScreen("Delete availability window?", [
+    `Delete this ${window.kindLabel.toLowerCase()} window?`,
+    `${where} ${window.start} - ${window.end}`,
+    "",
+    "This only changes your local profile until you export and share a new JSON."
+  ], "Delete");
+
+  if (!confirmed) {
+    return "Delete cancelled.";
+  }
+
+  await writeMyProfile(deleteAvailabilityWindow(profile, { kind: window.kind, index: window.index }));
+  return "Window deleted. Your local profile has changed. Export a new JSON file when ready to share.";
+}
+
+async function windowActionFlow(profile, window) {
+  let selected = 0;
+  const rows = [
+    { label: "Edit selected window", id: "edit" },
+    { label: "Delete selected window", id: "delete" },
+    { label: "Back", id: "back" }
+  ];
+
+  while (true) {
+    const where = window.kind === "base" ? window.day : window.date;
+    renderScreen({
+      title: "Selected availability window",
+      body: [
+        `${window.kindLabel}`,
+        `${where} ${window.start} - ${window.end}`,
+        "",
+        "Choose what to do."
+      ],
+      rows,
+      selected
     });
-    await writeMyProfile(profile);
-    return `Created local profile for ${profile.name}.`;
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    if (key.name === "escape") return "";
+    if (key.name === "return") {
+      if (rows[selected].id === "edit") return editWindowFlow(profile, window);
+      if (rows[selected].id === "delete") return deleteWindowFlow(profile, window);
+      return "";
+    }
+  }
+}
+
+async function helpScreen() {
+  clear();
+  stdout.write(`${bright("Help")}
+
+What this tool does:
+  Better Availability builds a local team availability map from portable JSON profiles.
+  No accounts. No server. No calendar access.
+
+Main ideas:
+  My availability: your local profile and your windows.
+  Teammates: imported teammate JSON profiles.
+  Find shared windows: overlap across selected effective availability.
+  Base availability: normal weekly working windows.
+  Added availability: temporary extra time on a date.
+  Blocked time: temporary unavailable time on a date.
+
+Sharing:
+  Export my JSON after local changes.
+  Send that JSON to teammates however you already communicate.
+  Import teammate JSON files they send you.
+
+Input formats:
+  Timezone: Region/City, such as America/Los_Angeles.
+  Time: 9am, 1:30pm, 13:30, or 09:00.
+  Date: today, tomorrow, or 2026-06-12.
+  Day: monday or mon.
+
+${footer()}
+`);
+  await waitForKey();
+}
+
+async function settingsFlow() {
+  const existing = await readMyProfile().catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const profile = await profileForm(existing);
+  await writeMyProfile(profile);
+  return "Profile settings saved. Export a new JSON file when ready to share.";
+}
+
+async function runApp() {
+  let screen = "main";
+  let selected = 0;
+  let message = "";
+  let teammateDetail = null;
+
+  try {
+    await readMyProfile();
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      try {
+        await onboardingWizard();
+      } catch (setupError) {
+        if (setupError instanceof NavigationSignal && setupError.action === "quit") {
+          return;
+        }
+        throw setupError;
+      }
+    } else {
+      throw error;
+    }
   }
 
-  if (action.id === "base") {
-    const profile = await readMyProfile();
-    await writeMyProfile(addBaseAvailability(profile, await promptWindow("base")));
-    return "Base availability added.";
-  }
+  while (true) {
+    const myProfile = await readMyProfile().catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const state = await readState();
+    const teammates = await listTeammates();
+    let rows = [];
+    let title = "Better Availability";
+    let body = [];
 
-  if (action.id === "add") {
-    const profile = await readMyProfile();
-    await writeMyProfile(addAvailability(profile, await promptWindow("override")));
-    return "Temporary availability added.";
-  }
+    if (screen === "main") {
+      rows = mainRows;
+      body = mainBody(myProfile, state, teammates);
+    } else if (screen === "my") {
+      title = "My availability";
+      body = myAvailabilityBody(myProfile, state);
+      rows = myAvailabilityRows(myProfile);
+    } else if (screen === "teammates") {
+      title = "Teammates";
+      body = [
+        "Imported teammate JSON profiles live only in your local team directory.",
+        "Select a teammate to view availability or remove them safely.",
+        "",
+        teammates.length === 0 ? "No teammates imported yet." : "Imported Teammates"
+      ];
+      rows = teammateRows(teammates);
+    } else if (screen === "teammate-detail" && teammateDetail) {
+      title = `Teammate: ${teammateDetail.profile.name}`;
+      body = teammateDetailBody(teammateDetail);
+      rows = [
+        { id: "remove", label: `Remove ${teammateDetail.profile.name}` },
+        { id: "back", label: "Back" }
+      ];
+    }
 
-  if (action.id === "block") {
-    const profile = await readMyProfile();
-    await writeMyProfile(blockAvailability(profile, await promptWindow("override")));
-    return "Availability block added.";
-  }
+    selected = Math.min(selected, Math.max(0, rows.length - 1));
+    renderScreen({ title, body, rows, selected, message });
+    message = "";
+    const key = await readKey();
 
-  if (action.id === "import") {
-    const source = await promptRequired("Path to teammate JSON: ");
-    const { profile } = await importTeammate(source);
-    return `Imported ${profile.name}.`;
-  }
+    if (key.name === "q" || (key.ctrl && key.name === "c")) break;
+    if (key.name === "?") {
+      await helpScreen();
+      continue;
+    }
+    if (key.name === "m") {
+      screen = "main";
+      selected = 0;
+      continue;
+    }
+    if (key.name === "escape") {
+      if (screen === "main") break;
+      screen = "main";
+      selected = 0;
+      continue;
+    }
+    if (key.name === "up" || key.name === "k") {
+      selected = (selected - 1 + rows.length) % rows.length;
+      continue;
+    }
+    if (key.name === "down" || key.name === "j") {
+      selected = (selected + 1) % rows.length;
+      continue;
+    }
+    if (key.name !== "return") {
+      continue;
+    }
 
-  if (action.id === "export") {
-    const target = await promptRequired("Export path: ");
-    const profile = await readMyProfile();
-    await fs.writeFile(target, `${JSON.stringify(profile, null, 2)}\n`);
-    return `Exported ${profile.name} to ${target}.`;
+    const row = rows[selected];
+    try {
+      if (screen === "main") {
+        if (row.id === "my") screen = "my";
+        else if (row.id === "teammates") screen = "teammates";
+        else if (row.id === "overlap") message = await findSharedWindowsFlow() || "";
+        else if (row.id === "import") message = await importFlow();
+        else if (row.id === "export") message = await exportFlow();
+        else if (row.id === "settings") message = await settingsFlow();
+        else if (row.id === "help") await helpScreen();
+        else if (row.id === "quit") break;
+        selected = 0;
+      } else if (screen === "my") {
+        if (row.type === "window") {
+          const freshProfile = await readMyProfile();
+          const freshWindow = getAvailabilityWindow(freshProfile, row.window.kind, row.window.index);
+          message = await windowActionFlow(freshProfile, freshWindow);
+        } else if (row.type === "add") {
+          const window = await windowForm("base");
+          const freshProfile = await readMyProfile();
+          if (window.kind === "base") await writeMyProfile(addBaseAvailability(freshProfile, window));
+          else if (window.kind === "added") await writeMyProfile(addAvailability(freshProfile, window));
+          else await writeMyProfile(blockAvailability(freshProfile, window));
+          message = "Window added. Export a new JSON file when ready to share.";
+        } else if (row.type === "block") {
+          const window = await windowForm("blocked");
+          await writeMyProfile(blockAvailability(await readMyProfile(), window));
+          message = "Blocked time added. Export a new JSON file when ready to share.";
+        } else if (row.type === "export") {
+          message = await exportFlow();
+        } else if (row.type === "settings") {
+          message = await settingsFlow();
+        } else if (row.type === "back") {
+          screen = "main";
+          selected = 0;
+        }
+      } else if (screen === "teammates") {
+        if (row.type === "teammate") {
+          teammateDetail = row.teammate;
+          screen = "teammate-detail";
+          selected = 0;
+        } else if (row.type === "import") {
+          message = await importFlow();
+        } else if (row.type === "back") {
+          screen = "main";
+          selected = 0;
+        }
+      } else if (screen === "teammate-detail") {
+        if (row.id === "remove") {
+          const confirmed = await confirmScreen("Remove teammate?", [
+            `Remove ${teammateDetail.profile.name} from your local team directory?`,
+            "This does not affect their JSON file or anyone else's app."
+          ], "Remove");
+          if (confirmed) {
+            await removeTeammate(teammateDetail.profile.id);
+            message = `Removed ${teammateDetail.profile.name}.`;
+            teammateDetail = null;
+            screen = "teammates";
+            selected = 0;
+          }
+        } else {
+          screen = "teammates";
+          selected = 0;
+        }
+      }
+    } catch (error) {
+      if (error instanceof NavigationSignal) {
+        if (error.action === "quit") {
+          break;
+        }
+        if (error.action === "main") {
+          screen = "main";
+          selected = 0;
+          message = "";
+          continue;
+        }
+      }
+      message = `Error: ${error.message}`;
+    }
   }
-
-  if (action.id === "help") {
-    await showHelp();
-    return "";
-  }
-
-  return "quit";
 }
 
 export async function launchTui() {
   if (!stdin.isTTY || !stdout.isTTY) {
-    throw new Error("The TUI requires an interactive terminal. Use `better-availability help` for command mode.");
+    throw new Error("The terminal app requires an interactive terminal. Use `better-availability help` for command mode.");
   }
 
   readline.emitKeypressEvents(stdin);
   setRawMode(true);
   stdin.resume();
 
-  let selected = 0;
-  let message = "";
-  let profiles = await listProfiles();
-
   try {
-    while (true) {
-      renderHome({ selected, message, profiles });
-      const key = await new Promise((resolve) => {
-        stdin.once("keypress", (_chunk, keypress) => resolve(keypress));
-      });
-
-      if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
-        break;
-      }
-
-      if (key.name === "up" || key.name === "k") {
-        selected = (selected - 1 + actions.length) % actions.length;
-      } else if (key.name === "down" || key.name === "j") {
-        selected = (selected + 1) % actions.length;
-      } else if (key.name === "return") {
-        try {
-          const result = await runAction(actions[selected]);
-          if (result === "quit") {
-            break;
-          }
-          message = result;
-          profiles = await listProfiles();
-        } catch (error) {
-          message = `Error: ${error.message}`;
-        }
-      }
-    }
+    await runApp();
   } finally {
     setRawMode(false);
     clear();

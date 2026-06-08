@@ -87,7 +87,7 @@ The project intentionally avoids vague abbreviations such as `PST`, `EST`, and
 `CST`. Offset calculations are made for the actual date being evaluated, so
 daylight saving changes are handled by the runtime's time zone database.
 
-In the TUI, timezone setup includes a searchable list of supported IANA
+In the terminal app, timezone setup includes a searchable list of supported IANA
 timezones. You can search by city or region, choose from the numbered results,
 or paste the exact value if you already know it.
 
@@ -140,23 +140,42 @@ Find overlap windows:
 better-availability overlap --date 2026-06-09 --people william,kelton --duration 30
 ```
 
-Open the terminal user interface:
+Open the terminal app:
 
 ```sh
 better-availability start
 ```
 
-The TUI supports arrow keys, `j`/`k`, Enter, Escape, and `q`. From the TUI you
-can view teammates, create your profile, import teammate JSON, export your JSON,
-add or block availability, and query overlap windows.
+The terminal app is organized around the operator loop:
 
-The TUI also shows input guidance while you work:
+- My availability: inspect, add, edit, delete, block time, and export.
+- Teammates: inspect imported teammate JSON, import more, and remove stale or incorrect teammates.
+- Find shared windows: query overlap with clearer no-result guidance.
+
+Every screen shows controls at the bottom:
+
+```text
+Controls: ↑/↓ move • Enter select • Esc back • m main menu • q quit • ? help
+```
+
+The app also shows input guidance while you work:
 
 - Time zones are searchable and shown in `Region/City` format.
 - Times accept `9am`, `1:30pm`, `13:30`, and similar inputs.
 - Dates accept `today`, `tomorrow`, or `YYYY-MM-DD`.
 - Days accept full names such as `monday` or short names such as `mon`.
 - Roles and tags are optional labels, not a fixed permission system.
+- Destructive actions such as deleting windows or removing teammates require confirmation.
+- The main screen shows profile completeness and whether your local profile changed since export.
+
+Command mode also supports direct maintenance:
+
+```sh
+better-availability windows
+better-availability edit-window --kind base --index 0 --day monday --start 9am --end 11am
+better-availability delete-window --kind base --index 0
+better-availability remove-teammate kelton
+```
 
 ## Local Directory
 
@@ -180,6 +199,7 @@ profiles/
   teammates/
     kelton.json
     frontend-dev.json
+state.json
 ```
 
 ## JSON Profile Format
@@ -211,5 +231,5 @@ profiles/
 npm test
 ```
 
-The first version keeps the core model dependency-free. That makes the overlap
-math easy to inspect, test, and later wrap with a richer terminal interface.
+The project keeps the core model dependency-free. That makes the availability
+math and local JSON behavior easy to inspect and test.
