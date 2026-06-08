@@ -163,17 +163,19 @@ The app also shows input guidance while you work:
 - Time zones are searchable and shown in `Region/City` format.
 - Times accept `9am`, `1:30pm`, `13:30`, and similar inputs.
 - Dates accept `today`, `tomorrow`, or `YYYY-MM-DD`.
+- Shared-window search uses a date picker and selectable people checklist.
 - Days accept full names such as `monday` or short names such as `mon`.
 - Roles and tags are optional labels, not a fixed permission system.
 - Destructive actions such as deleting windows or removing teammates require confirmation.
 - The main screen shows profile completeness and whether your local profile changed since export.
+- Windows cannot cross midnight yet; split late-night availability into two windows.
 
 Command mode also supports direct maintenance:
 
 ```sh
 better-availability windows
 better-availability edit-window --kind base --index 0 --day monday --start 9am --end 11am
-better-availability delete-window --kind base --index 0
+better-availability delete-window --kind base --index 0 --yes
 better-availability remove-teammate kelton
 ```
 

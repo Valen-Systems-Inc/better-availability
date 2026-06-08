@@ -1,5 +1,3 @@
-import readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import {
   addAvailability,
   addBaseAvailability,
@@ -65,7 +63,7 @@ Usage:
   better-availability block --date 2026-06-10 --start 13:00 --end 15:00
   better-availability windows
   better-availability edit-window --kind base --index 0 --day monday --start 9am --end 11am
-  better-availability delete-window --kind base --index 0
+  better-availability delete-window --kind base --index 0 --yes
   better-availability remove-teammate kelton
   better-availability export ./me.availability.json
   better-availability import ./teammate.availability.json
@@ -191,6 +189,9 @@ async function editWindow(args) {
 }
 
 async function deleteWindow(args) {
+  if (!args.yes) {
+    throw new Error("delete-window is destructive. Re-run with --yes after checking `better-availability windows`.");
+  }
   const kind = requireArg(args, "kind");
   const index = Number(requireArg(args, "index"));
   const next = deleteAvailabilityWindow(await readMyProfile(), { kind, index });
@@ -229,72 +230,6 @@ async function overlap(args) {
   }
 }
 
-async function promptForWindow(rl, mode) {
-  const start = await rl.question("Start time (HH:mm): ");
-  const end = await rl.question("End time (HH:mm): ");
-
-  if (mode === "base") {
-    return {
-      day: (await rl.question("Day (monday-sunday): ")).toLowerCase(),
-      start,
-      end
-    };
-  }
-
-  return {
-    date: await rl.question("Date (YYYY-MM-DD): "),
-    start,
-    end
-  };
-}
-
-async function menu() {
-  const rl = readline.createInterface({ input, output });
-
-  try {
-    console.log("Better Availability\n");
-    console.log("1. View teammates");
-    console.log("2. Add base availability");
-    console.log("3. Add temporary availability");
-    console.log("4. Block availability");
-    console.log("5. Query overlap");
-    console.log("6. Help");
-    const choice = await rl.question("\nChoose: ");
-
-    if (choice === "1") {
-      await teammates();
-    } else if (choice === "2") {
-      const profile = await readMyProfile();
-      await writeMyProfile(addBaseAvailability(profile, await promptForWindow(rl, "base")));
-      console.log("Base availability added.");
-    } else if (choice === "3") {
-      const profile = await readMyProfile();
-      await writeMyProfile(addAvailability(profile, await promptForWindow(rl, "override")));
-      console.log("Temporary availability added.");
-    } else if (choice === "4") {
-      const profile = await readMyProfile();
-      await writeMyProfile(blockAvailability(profile, await promptForWindow(rl, "override")));
-      console.log("Availability blocked.");
-    } else if (choice === "5") {
-      const date = await rl.question("Date (YYYY-MM-DD): ");
-      const duration = Number(await rl.question("Minimum duration in minutes: ") || "30");
-      const peopleInput = await rl.question("Profile ids, comma-separated (blank for all): ");
-      await overlap(parseArgs([
-        "overlap",
-        "--date",
-        date,
-        "--duration",
-        String(duration),
-        ...(peopleInput.trim() ? ["--people", peopleInput] : [])
-      ]));
-    } else {
-      console.log(helpText());
-    }
-  } finally {
-    rl.close();
-  }
-}
-
 export async function runCli(rawArgs) {
   const args = parseArgs(rawArgs);
   const command = args._[0] || "tui";
@@ -303,8 +238,6 @@ export async function runCli(rawArgs) {
     console.log(helpText());
   } else if (command === "start" || command === "tui") {
     await launchTui();
-  } else if (command === "menu") {
-    await menu();
   } else if (command === "init") {
     await init(args);
   } else if (command === "add-base") {

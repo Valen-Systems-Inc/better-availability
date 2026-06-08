@@ -18,19 +18,22 @@ export function assertDate(value) {
   }
 }
 
-export function todayString(offsetDays = 0) {
-  const now = new Date();
-  now.setDate(now.getDate() + offsetDays);
-  return now.toISOString().slice(0, 10);
+export function todayString(offsetDays = 0, now = new Date()) {
+  const local = new Date(now);
+  local.setDate(local.getDate() + offsetDays);
+  const year = local.getFullYear();
+  const month = String(local.getMonth() + 1).padStart(2, "0");
+  const day = String(local.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-export function normalizeDate(value) {
+export function normalizeDate(value, now = new Date()) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "today") {
-    return todayString(0);
+    return todayString(0, now);
   }
   if (normalized === "tomorrow") {
-    return todayString(1);
+    return todayString(1, now);
   }
   return value;
 }

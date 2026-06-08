@@ -23,11 +23,10 @@ import {
   readMyProfile,
   readState,
   removeTeammate,
-  selectProfiles,
   writeMyProfile
 } from "./storage.js";
 import { findOverlapWindows } from "./availability.js";
-import { normalizeDate, validateTimeZone } from "./time.js";
+import { addDays, normalizeDate, todayString, validateTimeZone } from "./time.js";
 
 const mainRows = [
   { id: "my", label: "My availability" },
@@ -148,18 +147,39 @@ function ageDays(dateValue) {
   return Math.max(0, Math.floor(ageMs / 86400000));
 }
 
-function staleLabel(importedAt) {
-  const daysOld = ageDays(importedAt);
-  if (daysOld === null) {
-    return "unknown freshness";
+function profileFreshness(item) {
+  const profileAge = ageDays(item.profile.updatedAt);
+  const importAge = ageDays(item.importedAt);
+  const imported = importAge === null ? "Imported: unknown" : `Imported: ${importAge === 0 ? "today" : `${importAge} days ago`}`;
+  const updated = profileAge === null
+    ? "Profile updated by teammate: unknown"
+    : `Profile updated by teammate: ${profileAge === 0 ? "today" : `${profileAge} days ago`}`;
+
+  let status = "Status: current";
+  if (profileAge === null) {
+    status = "Status: unknown profile age";
+  } else if (profileAge >= 14) {
+    status = "Status: stale profile data";
+  } else if (importAge !== null && importAge >= 14) {
+    status = "Status: possibly stale local import";
   }
-  if (daysOld >= 14) {
-    return `possibly stale (${daysOld} days old)`;
-  }
-  if (daysOld === 0) {
-    return "current (imported today)";
-  }
-  return `current (${daysOld} days old)`;
+
+  return { imported, updated, status };
+}
+
+function formatDateChoice(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  const label = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(year, month - 1, day));
+  return `${label} (${date})`;
+}
+
+function isoMinute(date) {
+  return date.toISOString().replace(/:00\.000Z$/, "Z");
 }
 
 function trimLine(value, width) {
@@ -195,7 +215,7 @@ function statusLines(profile, state) {
     "Profile Status",
     `  OK Name set: ${profile.name}`,
     `  OK Timezone set: ${profile.timeZone}`,
-    `${hasWindows ? "  OK" : "  Missing"} Base or added availability ${hasWindows ? "exists" : "is missing"}`,
+    hasWindows ? "  OK Availability windows exist" : "  Missing availability windows",
     `${profile.role ? "  OK" : "  Optional"} Role ${profile.role ? `set: ${profile.role}` : "not set"}`,
     `${changedSinceExport ? "  Warning" : "  OK"} ${changedSinceExport ? "Local profile changed since last export" : "Export is current"}`,
     `  Profile is ${hasWindows ? "usable" : "not ready: add at least one availability window"}.`
@@ -419,6 +439,144 @@ async function confirmTimezone(timeZone) {
   ], "Use timezone");
 }
 
+async function chooseDateToCheck() {
+  let selected = 0;
+  const today = todayString();
+  const tomorrow = todayString(1);
+  const rows = [
+    { label: `Today - ${formatDateChoice(today)}`, date: today },
+    { label: `Tomorrow - ${formatDateChoice(tomorrow)}`, date: tomorrow },
+    { label: "This week - choose a day", range: { start: today, days: 7, title: "Choose a day this week" } },
+    { label: "Next 7 days - choose a day", range: { start: tomorrow, days: 7, title: "Choose a day in the next 7 days" } },
+    { label: "Enter date manually", manual: true }
+  ];
+
+  while (true) {
+    renderScreen({
+      title: "Date to check",
+      body: [
+        "The MVP checks one day at a time.",
+        "Choose a day below, or enter a date manually."
+      ],
+      rows,
+      selected
+    });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    else if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    else if (key.name === "escape") return null;
+    else if (key.name === "return") {
+      const row = rows[selected];
+      if (row.date) return row.date;
+      if (row.manual) return normalizeDate(await promptRequired("Date to check. Use today, tomorrow, or YYYY-MM-DD: "));
+      if (row.range) return chooseDateFromRange(row.range.title, row.range.start, row.range.days);
+    }
+  }
+}
+
+async function chooseDateFromRange(title, startDate, days) {
+  let selected = 0;
+  const rows = Array.from({ length: days }, (_, index) => {
+    const date = addDays(startDate, index);
+    return { label: formatDateChoice(date), date };
+  });
+
+  while (true) {
+    renderScreen({
+      title,
+      body: ["Select one date. Multi-day overlap search is not implemented yet."],
+      rows,
+      selected
+    });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    else if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    else if (key.name === "escape") return null;
+    else if (key.name === "return") return rows[selected].date;
+  }
+}
+
+async function chooseProfilesForOverlap(profiles) {
+  let selected = 0;
+  const checked = new Set(profiles.map((profile) => profile.id));
+  const rowsForRender = () => profiles.map((profile) => ({
+    label: `${checked.has(profile.id) ? "[x]" : "[ ]"} ${profile.name.padEnd(22)} ${profile.timeZone}`,
+    profile
+  }));
+
+  while (true) {
+    const rows = rowsForRender();
+    renderScreen({
+      title: "People to include",
+      body: [
+        "Choose who must be available in the shared window.",
+        "Controls here: Space toggle • Enter continue • a select all • n select none • Esc back"
+      ],
+      rows,
+      selected
+    });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    else if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    else if (key.name === "a") profiles.forEach((profile) => checked.add(profile.id));
+    else if (key.name === "n") checked.clear();
+    else if (key.name === "space") {
+      const id = rows[selected].profile.id;
+      if (checked.has(id)) checked.delete(id);
+      else checked.add(id);
+    } else if (key.name === "escape") {
+      return null;
+    } else if (key.name === "return") {
+      const selectedProfiles = profiles.filter((profile) => checked.has(profile.id));
+      if (selectedProfiles.length === 0) {
+        await confirmScreen("No people selected", [
+          "Select at least one profile before finding shared windows."
+        ], "Back");
+      } else {
+        return selectedProfiles;
+      }
+    }
+  }
+}
+
+async function chooseProfileTimezone(existing) {
+  if (!existing) {
+    return chooseTimezone();
+  }
+
+  let selected = 0;
+  const rows = [
+    { label: `Keep current timezone: ${existing.timeZone}`, keep: true },
+    { label: "Change timezone", change: true }
+  ];
+
+  while (true) {
+    renderScreen({
+      title: "Profile timezone",
+      body: [
+        `Current timezone: ${existing.timeZone}`,
+        `Current local time there: ${localTimeLabel(existing.timeZone)}`,
+        "",
+        "Keep the current timezone unless you are correcting a mistake."
+      ],
+      rows,
+      selected
+    });
+    const key = await readKey();
+    if (await handleNestedNavigation(key)) continue;
+    if (key.name === "up" || key.name === "k") selected = (selected - 1 + rows.length) % rows.length;
+    else if (key.name === "down" || key.name === "j") selected = (selected + 1) % rows.length;
+    else if (key.name === "escape") return existing.timeZone;
+    else if (key.name === "return") {
+      if (rows[selected].keep) return existing.timeZone;
+      return chooseTimezone();
+    }
+  }
+}
+
 async function profileForm(existing = null) {
   const name = await promptRequired(
     `Name identifies your local profile. Example: William\nName${existing ? ` [${existing.name}]` : ""}: `,
@@ -428,7 +586,7 @@ async function profileForm(existing = null) {
     `Role is optional. It is a label for grouping teammates later.\nExamples: Founder, Frontend Developer, Backend, Design, Contractor\nRole${existing?.role ? ` [${existing.role}]` : " [optional]"}: `,
     { defaultValue: existing?.role || "" }
   );
-  const timezone = await chooseTimezone();
+  const timezone = await chooseProfileTimezone(existing);
   if (!timezone) {
     throw new Error("Timezone selection cancelled");
   }
@@ -470,7 +628,7 @@ async function windowForm(kind, existing = {}) {
     { defaultValue: existing.start || "" }
   );
   const end = await promptRequired(
-    `End time for this window. It must be after the start time.\nEnd time${existing.end ? ` [${existing.end}]` : ""}: `,
+    `End time for this window. It must be after the start time.\nWindows cannot cross midnight yet; split late-night time into two windows.\nEnd time${existing.end ? ` [${existing.end}]` : ""}: `,
     { defaultValue: existing.end || "" }
   );
 
@@ -572,25 +730,29 @@ function myAvailabilityRows(profile) {
 
 function teammateRows(teammates) {
   return [
-    ...teammates.map((item) => ({
-      type: "teammate",
-      label: `${item.profile.id.padEnd(18)} ${item.profile.name.padEnd(22)} ${item.profile.timeZone}  ${staleLabel(item.importedAt)}`,
-      teammate: item
-    })),
+    ...teammates.map((item) => {
+      const freshness = profileFreshness(item);
+      return {
+        type: "teammate",
+        label: `${item.profile.name.padEnd(24)} ${item.profile.timeZone}  ${freshness.status.replace("Status: ", "")}`,
+        teammate: item
+      };
+    }),
     { type: "import", label: "Import teammate JSON" },
     { type: "back", label: "Back" }
   ];
 }
 
 function teammateDetailBody(item) {
+  const freshness = profileFreshness(item);
   return [
     "Teammate profile",
     `Name: ${item.profile.name}`,
     `Role: ${item.profile.role || "not set"}`,
     `Timezone: ${item.profile.timeZone}`,
-    `Last imported: ${item.importedAt || "unknown"}`,
-    `Profile updated by teammate: ${item.profile.updatedAt || "unknown"}`,
-    `Status: ${staleLabel(item.importedAt)}`,
+    freshness.imported,
+    freshness.updated,
+    freshness.status,
     "",
     ...formatAvailabilityByDay(item.profile)
   ];
@@ -612,17 +774,22 @@ function noResultsGuidance(names, date, durationMinutes) {
 }
 
 async function findSharedWindowsFlow() {
-  const date = normalizeDate(await promptRequired("Date range start. Use today, tomorrow, or YYYY-MM-DD: "));
+  const date = await chooseDateToCheck();
+  if (!date) {
+    return "Overlap query cancelled.";
+  }
   const durationText = await promptLine("Minimum duration in minutes [30]: ", { defaultValue: "30" });
   const profiles = await listProfiles();
-  if (profiles.length > 0) {
-    stdout.write(`Available profile ids: ${profiles.map((profile) => profile.id).join(", ")}\n`);
+  if (profiles.length === 0) {
+    return "No profiles found. Create your profile or import teammate JSON first.";
   }
-  const peopleText = await promptLine("Profile ids, comma-separated [all profiles]: ");
   const durationMinutes = Number(durationText || 30);
-  const people = peopleText ? peopleText.split(",").map((id) => id.trim()).filter(Boolean) : [];
-  const selectedProfiles = await selectProfiles(people);
+  const selectedProfiles = await chooseProfilesForOverlap(profiles);
+  if (!selectedProfiles) {
+    return "Overlap query cancelled.";
+  }
   const windows = findOverlapWindows(selectedProfiles, { date, durationMinutes });
+  const myProfile = await readMyProfile().catch(() => null);
 
   clear();
   if (windows.length === 0) {
@@ -637,12 +804,24 @@ async function findSharedWindowsFlow() {
 
   stdout.write(`${bright(`Shared windows for ${date}`)}\n\n`);
   windows.forEach((window, index) => {
-    stdout.write(`Best Window #${index + 1}\n`);
-    for (const local of window.localTimes) {
-      stdout.write(`${local.name}: ${local.start} - ${local.end} ${local.timeZone}\n`);
+    const mine = myProfile ? window.localTimes.find((local) => local.id === myProfile.id) : null;
+    const others = window.localTimes.filter((local) => !mine || local.id !== mine.id);
+
+    stdout.write(`Shared Window #${index + 1}\n`);
+    stdout.write(`Duration: ${window.durationMinutes} minutes\n`);
+    stdout.write(`Reference: ${isoMinute(window.start)} - ${isoMinute(window.end)}\n`);
+    if (mine) {
+      stdout.write("You:\n");
+      stdout.write(`  ${mine.name.padEnd(18)} ${mine.start} - ${mine.end} ${mine.timeZone}\n`);
     }
-    stdout.write("Why this works: all selected teammates have overlapping effective availability for this duration.\n");
-    stdout.write("No blocked override conflicts with this computed window.\n\n");
+    if (others.length > 0) {
+      stdout.write(mine ? "Others:\n" : "Selected people:\n");
+      for (const local of others) {
+        stdout.write(`  ${local.name.padEnd(18)} ${local.start} - ${local.end} ${local.timeZone}\n`);
+      }
+    }
+    stdout.write("Why this works:\n");
+    stdout.write("  All selected profiles have effective availability during this window.\n\n");
   });
   stdout.write(`${footer()}\n`);
   await waitForKey();

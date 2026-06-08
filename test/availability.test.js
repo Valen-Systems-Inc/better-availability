@@ -10,7 +10,7 @@ import {
   listAvailabilityWindows,
   updateAvailabilityWindow
 } from "../src/profile.js";
-import { normalizeTime, parseMinutes } from "../src/time.js";
+import { normalizeDate, normalizeTime, parseMinutes, todayString, zonedTimeToUtc } from "../src/time.js";
 
 function profile(overrides) {
   return {
@@ -149,5 +149,53 @@ test("rejects overlapping windows before saving", () => {
   assert.throws(
     () => addBaseAvailability(william, { day: "mon", start: "11am", end: "2pm" }),
     /overlaps an existing base window/
+  );
+});
+
+test("explains that cross-midnight windows must be split", () => {
+  const william = profile({
+    id: "william",
+    name: "William",
+    timeZone: "America/Los_Angeles"
+  });
+
+  assert.throws(
+    () => addBaseAvailability(william, { day: "monday", start: "22:00", end: "02:00" }),
+    /Windows cannot cross midnight yet/
+  );
+});
+
+test("normalizes today and tomorrow using local date methods", () => {
+  const localLateNight = new Date(2026, 5, 8, 23, 30, 0);
+
+  assert.equal(todayString(0, localLateNight), "2026-06-08");
+  assert.equal(normalizeDate("tomorrow", localLateNight), "2026-06-09");
+});
+
+test("handles America/Los_Angeles spring-forward offset after DST starts", () => {
+  assert.equal(
+    zonedTimeToUtc("2026-03-09", "10:00", "America/Los_Angeles").toISOString(),
+    "2026-03-09T17:00:00.000Z"
+  );
+});
+
+test("handles America/Los_Angeles fall-back offset after DST ends", () => {
+  assert.equal(
+    zonedTimeToUtc("2026-11-02", "10:00", "America/Los_Angeles").toISOString(),
+    "2026-11-02T18:00:00.000Z"
+  );
+});
+
+test("handles Europe/London DST transition after summer time starts", () => {
+  assert.equal(
+    zonedTimeToUtc("2026-03-30", "10:00", "Europe/London").toISOString(),
+    "2026-03-30T09:00:00.000Z"
+  );
+});
+
+test("handles Asia/Kolkata no-DST offset consistently", () => {
+  assert.equal(
+    zonedTimeToUtc("2026-06-08", "10:00", "Asia/Kolkata").toISOString(),
+    "2026-06-08T04:30:00.000Z"
   );
 });

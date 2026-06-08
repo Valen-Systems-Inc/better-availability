@@ -93,7 +93,9 @@ export function normalizeWindow(window, mode = "base") {
   const endMinutes = parseMinutes(normalized.end);
 
   if (endMinutes <= startMinutes) {
-    throw new Error(`availability window must end after it starts: ${normalized.start}-${normalized.end}`);
+    throw new Error(
+      `Windows cannot cross midnight yet. Split ${normalized.start}-${normalized.end} into two windows, for example 22:00-23:59 and 00:00-02:00.`
+    );
   }
 
   if (mode === "base") {
