@@ -138,7 +138,7 @@ better-availability overlap --date 2026-06-09 --people william,kelton --duration
 Open the terminal user interface:
 
 ```sh
-better-availability
+better-availability start
 ```
 
 The TUI supports arrow keys, `j`/`k`, Enter, Escape, and `q`. From the TUI you

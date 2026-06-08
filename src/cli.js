@@ -52,7 +52,7 @@ export function helpText() {
 
 Usage:
   better-availability
-  better-availability tui
+  better-availability start
   better-availability help
   better-availability init --name "William" --timezone America/Los_Angeles [--role Founder] [--tags leadership,product]
   better-availability add-base --day monday --start 09:00 --end 11:00
@@ -237,7 +237,7 @@ export async function runCli(rawArgs) {
 
   if (command === "help" || args.help) {
     console.log(helpText());
-  } else if (command === "tui") {
+  } else if (command === "start" || command === "tui") {
     await launchTui();
   } else if (command === "menu") {
     await menu();
