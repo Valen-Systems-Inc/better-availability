@@ -19,6 +19,7 @@ import {
 } from "./profile.js";
 import {
   availabilityHome,
+  defaultExportPath,
   exportMyProfile,
   importTeammate,
   listProfiles,
@@ -103,6 +104,17 @@ function setRawMode(enabled) {
   if (stdin.isTTY) {
     stdin.setRawMode(enabled);
   }
+}
+
+function ensureInputActive() {
+  if (typeof stdin.resume === "function") {
+    stdin.resume();
+  }
+}
+
+function prepareKeyInput() {
+  setRawMode(true);
+  ensureInputActive();
 }
 
 function supportedTimeZones() {
@@ -354,7 +366,7 @@ async function promptLine(question, { defaultValue = "" } = {}) {
     return answer || defaultValue;
   } finally {
     rl.close();
-    setRawMode(true);
+    prepareKeyInput();
   }
 }
 
@@ -367,6 +379,7 @@ async function promptRequired(question, options = {}) {
 }
 
 async function waitForKey() {
+  prepareKeyInput();
   return new Promise((resolve) => {
     const onData = () => {
       stdin.off("data", onData);
@@ -452,6 +465,7 @@ async function confirmScreen(title, body, confirmLabel = "Confirm") {
 }
 
 function readKey() {
+  prepareKeyInput();
   return new Promise((resolve) => {
     stdin.once("keypress", (_chunk, keypress) => resolve(keypress));
   });
@@ -1080,9 +1094,21 @@ async function importFlow() {
 }
 
 async function exportFlow() {
-  const target = await promptRequired("Export path for your JSON file. Example: ./william.availability.json: ");
-  const { profile } = await exportMyProfile(target);
-  return `Exported ${profile.name}. Share that JSON with your team.`;
+  const profile = await readMyProfile();
+  const defaultPath = defaultExportPath(profile);
+  const confirmed = await confirmScreen("Export my JSON", [
+    "Your export saves automatically to Downloads.",
+    `File: ${defaultPath}`,
+    "",
+    "Use CLI export if you want a custom path."
+  ], "Save to Downloads");
+
+  if (!confirmed) {
+    return "Export cancelled.";
+  }
+
+  const result = await exportMyProfile();
+  return `Exported ${result.profile.name} to ${result.target}. Share that JSON with your team.`;
 }
 
 async function editWindowFlow(profile, window) {

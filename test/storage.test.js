@@ -5,10 +5,12 @@ import path from "node:path";
 import test from "node:test";
 import { createProfile } from "../src/profile.js";
 import {
+  defaultExportPath,
   exportMyProfile,
   importTeammate,
   listTeammates,
   readState,
+  resolveExportTarget,
   removeTeammate,
   writeMyProfile
 } from "../src/storage.js";
@@ -28,6 +30,30 @@ test("export tracks last exported time in local state", async () => {
   const state = await readState(home);
 
   assert.ok(state.lastExportedAt);
+});
+
+test("export defaults to Downloads with a stable availability filename", async () => {
+  const profile = createProfile({
+    name: "William",
+    timeZone: "America/Los_Angeles"
+  });
+
+  assert.equal(
+    defaultExportPath(profile),
+    path.join(os.homedir(), "Downloads", "william.availability.json")
+  );
+});
+
+test("bare export names resolve into Downloads with an availability extension", async () => {
+  const profile = createProfile({
+    name: "William",
+    timeZone: "America/Los_Angeles"
+  });
+
+  assert.equal(
+    resolveExportTarget("williamvalenrobinson", profile),
+    path.join(os.homedir(), "Downloads", "williamvalenrobinson.availability.json")
+  );
 });
 
 test("teammate import can keep both conflicting profiles and remove one", async () => {

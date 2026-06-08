@@ -69,13 +69,56 @@ export async function writeMyProfile(profile, home = availabilityHome()) {
   await writeProfile(store.me, profile);
 }
 
+function slugifyExportName(value) {
+  return (value || "availability")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "availability";
+}
+
+function ensureExportFileName(value, profile) {
+  const trimmed = value.trim();
+  if (path.extname(trimmed)) {
+    return trimmed;
+  }
+
+  const baseName = slugifyExportName(trimmed || profile?.id || profile?.name);
+  return `${baseName}.availability.json`;
+}
+
+export function defaultExportPath(profile) {
+  return path.join(homedir(), "Downloads", ensureExportFileName("", profile));
+}
+
+export function resolveExportTarget(target, profile) {
+  const trimmed = (target || "").trim();
+  if (!trimmed) {
+    return defaultExportPath(profile);
+  }
+
+  const hasDirectoryHint = trimmed.includes(path.sep) || trimmed.startsWith(".");
+  if (!hasDirectoryHint) {
+    return path.join(homedir(), "Downloads", ensureExportFileName(trimmed, profile));
+  }
+
+  const resolved = path.resolve(trimmed);
+  if (path.extname(resolved)) {
+    return resolved;
+  }
+
+  const directory = path.dirname(resolved);
+  const name = path.basename(resolved);
+  return path.join(directory, ensureExportFileName(name, profile));
+}
+
 export async function exportMyProfile(target, home = availabilityHome()) {
   const profile = await readMyProfile(home);
-  await fs.writeFile(target, `${JSON.stringify(profile, null, 2)}\n`);
+  const resolvedTarget = resolveExportTarget(target, profile);
+  await writeProfile(resolvedTarget, profile);
   const state = await readState(home);
   state.lastExportedAt = new Date().toISOString();
   await writeState(state, home);
-  return { profile, target };
+  return { profile, target: resolvedTarget };
 }
 
 export async function importTeammate(file, { onConflict = "replace" } = {}, home = availabilityHome()) {

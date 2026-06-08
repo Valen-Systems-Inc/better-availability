@@ -126,12 +126,8 @@ async function block(args) {
 
 async function exportProfile(args) {
   const target = args._[1];
-  if (!target) {
-    throw new Error("Missing export file path");
-  }
-
-  const { profile } = await exportMyProfile(target);
-  console.log(`Exported ${profile.name} to ${target}`);
+  const { profile, target: resolvedTarget } = await exportMyProfile(target);
+  console.log(`Exported ${profile.name} to ${resolvedTarget}`);
 }
 
 async function importProfile(args) {
